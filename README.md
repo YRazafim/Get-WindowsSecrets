@@ -1,25 +1,23 @@
 # Why
 
-To be able to really understand how can we dump Windows Secrets internally.
-The script work on a local Windows machine. It is not intended to bypass AVs.
-It is commented to understand each process. Currently It can :
-	- Dump BootKey
-	- Compute Hashed BootKey
-	- Dump LSA Secrets
-		- $MACHINE.ACC = Machine account password in clear text if computer is joined to a domain
-		- DefaultPassword = Clear text password when autologon is configured for an account
-		- NL$KM = Secret key in clear text for decrypting Cached Domain Credentials
-		- DPAPI_SYSTEM = System User MasterKey and System Machine MasterKey in clear text for decrypting System User MasterKey files and System Machine MasterKey files (DPAPI)
-		- _SC_<ServiceName> = Service account password in clear text
-		- ASPNET_WP_PASSWORD = Password for .NET services in clear text
+To be able to really understand how can we dump Windows Secrets internally.<br/>
+The script work on a local Windows machine. It is not intended to bypass AVs.<br/>
+It is commented to understand each process. Currently It can :<br/>
+	- Dump BootKey<br/>
+	- Compute Hashed BootKey<br/>
+	- Dump LSA Secrets<br/>
+		- $MACHINE.ACC = Machine account password in clear text if computer is joined to a domain<br/>
+		- DefaultPassword = Clear text password when autologon is configured for an account<br/>
+		- NL$KM = Secret key in clear text for decrypting Cached Domain Credentials<br/>
+		- DPAPI_SYSTEM = System User MasterKey and System Machine MasterKey in clear text for decrypting System User MasterKey files and System Machine MasterKey files (DPAPI)<br/>
+		- _SC_<ServiceName> = Service account password in clear text<br/>
+		- ASPNET_WP_PASSWORD = Password for .NET services in clear text<br/>
 		- L$_SQSA_S-<SID> = Clear text answers for Windows Security Questions
-	- DPAPI Secrets
-		- Wi-Fi passwords
-		- Chrome cookies/passwords
+	- DPAPI Secrets<br/>
+		- Wi-Fi passwords<br/>
+		- Chrome cookies/passwords<br/>
 
 It is clearly inspired from Secretsdump (<https://github.com/SecureAuthCorp/impacket/blob/master/examples/secretsdump.py>) and Pypykatz (<https://github.com/skelsec/pypykatz>).
-
-Sorry for my coding style.
 
 # How it works
 
