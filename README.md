@@ -10,9 +10,9 @@ It is commented to understand each process. Currently It can :<br/>
       * DefaultPassword = Clear text password when autologon is configured for an account<br/>
       * NL$KM = Secret key in clear text for decrypting Cached Domain Credentials<br/>
       * DPAPI_SYSTEM = System User MasterKey and System Machine MasterKey in clear text for decrypting System User MasterKey files and System Machine MasterKey files (DPAPI)<br/>
-      * _SC_<ServiceName> = Service account password in clear text<br/>
+      * _SC__&lt;ServiceName&gt; = Service account password in clear text<br/>
       * ASPNET_WP_PASSWORD = Password for .NET services in clear text<br/>
-      * L$_SQSA_S-<SID> = Clear text answers for Windows Security Questions
+      * L$_SQSA_S-&lt;SID&gt; = Clear text answers for Windows Security Questions
    * Cached Domain Credentials
    * DPAPI Secrets<br/>
       * Wi-Fi passwords<br/>
