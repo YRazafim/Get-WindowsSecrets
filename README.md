@@ -31,3 +31,5 @@ Download the script on target and from Powershell:
 . <Path>\Get-WindowsSecrets.ps1; Get-WindowsSecrets -Creds <User>:<Pwd> -NTHashes <User1>:<NTHash1>/<User2>:<NTHash2>
 . <Path>\Get-WindowsSecrets.ps1; Get-WindowsSecrets
 ```
+
+Creds and NTHashes parameters helped for DPAPI only (If you compromised these secrets for a user).
