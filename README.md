@@ -14,14 +14,14 @@ It is commented to understand each process. Currently It can :<br/>
       * _SC__&lt;ServiceName&gt; = Service account password in clear text<br/>
       * ASPNET_WP_PASSWORD = Password for .NET services in clear text<br/>
       * L$_SQSA_S-&lt;SID&gt; = Clear text answers for Windows Security Questions
-   * Cached Domain Credentials
-   * DPAPI Secrets<br/>
+   * Dump Cached Domain Credentials
+   * Dump DPAPI Secrets<br/>
       * Wi-Fi passwords<br/>
-      * Chrome cookies/passwords<br/>
+      * Chrome cookies/passwords (Removed because It required loading ChilkatDotNet2 and System.Data.SQLite DLLs)<br/>
+   * Dump Vault Credential Manager passwords (VPOL and VCRD files)
+   * DUMP VNC passwords (RealVNC, TightVNC, TigerVNC, UltraVNC)
 
 It is clearly inspired from Secretsdump (<https://github.com/SecureAuthCorp/impacket/blob/master/examples/secretsdump.py>) and Pypykatz (<https://github.com/skelsec/pypykatz>).
-	
-Check script to learn, sorry for coding style and hardcoded B64 DLL (ChiklatDotNet2 <https://www.chilkatsoft.com/downloads_DotNet.asp> and System.Data.SQLite <https://system.data.sqlite.org/index.html/doc/trunk/www/downloads.wiki>) ...
 
 # How it works
 
