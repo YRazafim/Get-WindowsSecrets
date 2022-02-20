@@ -1,8 +1,8 @@
 <########################################################################################################>
 <########################################################################################################>
-<#																	 									#>
-<# THESE FUNCTIONS REQUIRED FOR SOME CALCULATIONS BUT NOT INTERESTING FOR UNDERSTANDING WINDOWS SECRETS #>
-<#																	 									#>
+<#
+<# THESE FUNCTIONS ARE REQUIRED FOR SOME CALCULATIONS BUT NOT INTERESTING FOR UNDERSTANDING WINDOWS SECRETS #>
+<#
 <########################################################################################################>
 <########################################################################################################>
 
@@ -727,9 +727,9 @@ function Get-RegKeyPropertyValue($Key, $SubKey, $Property)
 
 <#####################################################################>
 <#####################################################################>
-<#																	 #>
+<#
 <# THESE FUNCTIONS ARE INTERESTING FOR UNDERSTANDING WINDOWS SECRETS #>
-<#																	 #>
+<#
 <#####################################################################>
 <#####################################################################>
 
@@ -2967,6 +2967,7 @@ function Get-VNCPwds()
 	$RegPaths = @("HKLM:SOFTWARE\RealVNC\vncserver", "HKLM:SOFTWARE\TightVNC\Server", "HKLM:SOFTWARE\Wow6432Node\TightVNC\Server", "HKLU:SOFTWARE\TigerVNC\WinVNC4")
 	$FilePaths = @("$Env:Programfiles\UltraVNC\ultravnc.ini", "$Env:Programfiles (x86)\UltraVNC\ultravnc.ini", "$Env:Programfiles\Uvnc Bvba\UltraVNC\ultravnc.ini", "$Env:Programfiles (x86)\Uvnc Bvba\UltraVNC\ultravnc.ini")
 	$Pwds = @()
+	$FindOne = $False
 	
 	# Same VNC Secret Key used for different VNC Server 
 	$VNCKey = @(0xe8, 0x4a, 0xd6, 0x60, 0xc4, 0x72, 0x1a, 0xe0)
@@ -2981,6 +2982,7 @@ function Get-VNCPwds()
 				$PwdEncryptedBytes = $Reg.GetValue($Key)
 				If ($PwdEncryptedBytes)
 				{
+					$FindOne = $True
 					$ClearTextBytes = DecryptVNCPwd $VNCKey $PwdEncryptedBytes
 					$ClearText = [System.Text.Encoding]::ASCII.GetString($ClearTextBytes)
 					
@@ -3002,6 +3004,7 @@ function Get-VNCPwds()
 						$HexStringPwd = ($Line.Split("="))[1]
 						If ($HexStringPwd)
 						{
+							$FindOne = $True
 							$PwdEncryptedBytes = HexStringToBytes $HexStringPwd
 							$ClearTextBytes = DecryptVNCPwd $VNCKey $PwdEncryptedBytes
 							$ClearText = [System.Text.Encoding]::ASCII.GetString($ClearTextBytes)
@@ -3014,6 +3017,7 @@ function Get-VNCPwds()
 		}
 	}
 	
+	If (-not ($FindOne)) { Write-Host "[-] No VNC pwds found" }
 }
 
 
@@ -3024,7 +3028,7 @@ function Get-VNCPwds()
 function Get-WindowsSecrets()
 {
 	<#
-		Get-WindowsSecrets: Call to functions to get Windows Secrets (BootKey, SAM, LSA Secrets, Cached Domain Creds, DPAPI Secrets)
+		Get-WindowsSecrets: Call to functions to get Windows Secrets (BootKey, SAM, LSA Secrets, Cached Domain Creds, DPAPI Secrets, VNC pwds)
 			- For DPAPI Secrets, It is very slow for MasterKeys decryption, you can skip with -SkipDPAPI parameter
 	#>
 	Param(
