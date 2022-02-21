@@ -3,7 +3,7 @@
 To be able to really understand how can we dump Windows Secrets internally.<br/>
 The script work on a local Windows machine (Powershell v2 to latest).<br/>
 It is not intended to bypass AVs and you have to be administrator on the computer.<br/>
-It is commented to understand each process. Currently It can :<br/>
+It is commented to understand each process. Currently It can:<br/>
    * Dump BootKey
    * Compute Hashed BootKey
    * Dump LSA Secrets
