@@ -5327,9 +5327,9 @@ function ListSessionTokens
 	
 	# Enumerate all processes
 	$ArraySize = 120
-    $ArrayBytesSize = $ArraySize * [System.Runtime.InteropServices.Marshal]::SizeOf((New-Object UInt32))
-    $ProcessIds = New-Object UInt32[] $ArraySize
-    $BytesCopied = $ArrayBytesSize
+	$ArrayBytesSize = $ArraySize * [System.Runtime.InteropServices.Marshal]::SizeOf((New-Object UInt32))
+	$ProcessIds = New-Object UInt32[] $ArraySize
+	$BytesCopied = $ArrayBytesSize
 	While ($BytesCopied -eq $ArrayBytesSize)
 	{
 		$ArraySize += 10
@@ -5451,9 +5451,9 @@ function ImpersonateToken($SIDToImpersonate)
 	
 	# Enumerate all processes
 	$ArraySize = 120
-    $ArrayBytesSize = $ArraySize * [System.Runtime.InteropServices.Marshal]::SizeOf((New-Object UInt32))
-    $ProcessIds = New-Object UInt32[] $ArraySize
-    $BytesCopied = $ArrayBytesSize
+	$ArrayBytesSize = $ArraySize * [System.Runtime.InteropServices.Marshal]::SizeOf((New-Object UInt32))
+	$ProcessIds = New-Object UInt32[] $ArraySize
+	$BytesCopied = $ArrayBytesSize
 	While ($BytesCopied -eq $ArrayBytesSize)
 	{
 		$ArraySize += 10
