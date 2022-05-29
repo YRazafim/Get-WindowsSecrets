@@ -7,6 +7,7 @@ It is not intended to bypass AVs and you have to be administrator on the compute
 It is commented to understand each process. Currently It can:<br/>
    * Dump BootKey
    * Compute Hashed BootKey
+   * Dump SAM
    * Dump LSA Secrets
       *	$MACHINE.ACC = Machine account password in clear text if computer is joined to a domain<br/>
       * DefaultPassword = Clear text password when autologon is configured for an account<br/>
