@@ -1,6 +1,7 @@
 # Why
 
-To be able to really understand how can we dump Windows Secrets internally.<br/>
+To understand how can we dump Windows Secrets internally.<br/>
+Powershell implementation of Secretsdump (<https://github.com/SecureAuthCorp/impacket/blob/master/examples/secretsdump.py>) and Pypykatz (<https://github.com/skelsec/pypykatz>).<br/>
 The script work on a local Windows machine (Powershell v2 to latest).<br/>
 It is not intended to bypass AVs and you have to be administrator on the computer.<br/>
 It is commented to understand each process. Currently It can:<br/>
@@ -17,20 +18,24 @@ It is commented to understand each process. Currently It can:<br/>
    * Dump Cached Domain Credentials
    * Dump DPAPI Secrets<br/>
       * Wi-Fi passwords<br/>
-      * Chrome cookies/passwords (Removed because It required loading ChilkatDotNet2 and System.Data.SQLite DLLs)<br/>
+      * <del>Chrome cookies/passwords (Removed because It required loading ChilkatDotNet2 and System.Data.SQLite DLLs)</del><br/>
    * Dump Vault Credential Manager passwords (VPOL and VCRD files)
    * Dump VNC passwords (RealVNC, TightVNC, TigerVNC, UltraVNC)
-
-It is clearly inspired from Secretsdump (<https://github.com/SecureAuthCorp/impacket/blob/master/examples/secretsdump.py>) and Pypykatz (<https://github.com/skelsec/pypykatz>).
+   * Dump NTDS.dit (Shadow Copy and parsing as ESE format)
+   * Dump LSASS (ProcOpen and DupHandle methods)
+   * List Session Tokens and Impersonate
 
 # How it works
 
 Download the script on target and from Powershell:
 ```
-. <Path>\Get-WindowsSecrets.ps1; Get-WindowsSecrets -Creds <User1>:<Pwd1>:<User2>:<Pwd2>
-. <Path>\Get-WindowsSecrets.ps1; Get-WindowsSecrets -NTHashes <User>:<NTHash>
-. <Path>\Get-WindowsSecrets.ps1; Get-WindowsSecrets -Creds <User>:<Pwd> -NTHashes <User1>:<NTHash1>/<User2>:<NTHash2>
-. <Path>\Get-WindowsSecrets.ps1; Get-WindowsSecrets
+. <Path>\Get-WindowsSecrets.ps1;
+Get-WindowsSecrets -Creds <User1>:<Pwd1>:<User2>:<Pwd2>
+Get-WindowsSecrets -NTHashes <User>:<NTHash>
+Get-WindowsSecrets -Creds <User>:<Pwd> -NTHashes <User1>:<NTHash1>/<User2>:<NTHash2>
+Get-WindowsSecrets -SkipDPAPI $True
+Get-WindowsSecrets
+Get-WindowsSecrets -Impersonate <SID>
 ```
 
 Creds and NTHashes parameters helped for DPAPI only (If you compromised these secrets for a user).
