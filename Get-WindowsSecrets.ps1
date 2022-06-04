@@ -1081,8 +1081,8 @@ function ReadMemory($Handle, $Pages, $Addr)
 				$Res = [WinProcAPI]::ReadProcessMemory($Handle, $Page["BaseAddress"], $Buff, $Page["RegionSize"], [ref] $BytesRead)
 				If (-not $Res)
 				{
-					Write-Host ("[-] Failed to read page")
-					return $Null
+					Write-Host ("[-] Failed to read page. Try again")
+					return (ReadMemory $Handle $Pages $Addr)
 				}
 				ElseIf ($BytesRead -ne $Page["RegionSize"])
 				{
@@ -1155,11 +1155,11 @@ function GetType($Buff, $BaseAddr, [ref]$Offset, $Type, $Struct)
 		{
 			If ([System.IntPtr]::Size -eq 8)
 			{
-				return ([System.BitConverter]::ToUint64((ReadBuff $Buff ([System.IntPtr]::Size) $Offset), 0))
+				return ([System.BitConverter]::ToUInt64((ReadBuff $Buff ([System.IntPtr]::Size) $Offset), 0))
 			}
 			Else
 			{
-				return ([System.BitConverter]::ToUint32((ReadBuff $Buff ([System.IntPtr]::Size) $Offset), 0))
+				return ([System.BitConverter]::ToUInt32((ReadBuff $Buff ([System.IntPtr]::Size) $Offset), 0))
 			}
 		}
 		"PVoid"
@@ -1192,7 +1192,7 @@ function GetType($Buff, $BaseAddr, [ref]$Offset, $Type, $Struct)
 		}
 		"DWord"
 		{
-			return ([System.BitConverter]::ToUint32((ReadBuff $Buff 4 $Offset), 0))
+			return ([System.BitConverter]::ToUInt32((ReadBuff $Buff 4 $Offset), 0))
 		}
 		"Handle"
 		{
@@ -1204,7 +1204,7 @@ function GetType($Buff, $BaseAddr, [ref]$Offset, $Type, $Struct)
 		}
 		"ULong64"
 		{
-			return ([System.BitConverter]::ToUint64((ReadBuff $Buff 8 $Offset), 0))
+			return ([System.BitConverter]::ToUInt64((ReadBuff $Buff 8 $Offset), 0))
 		}
 		"List_Entry"
 		{
@@ -1558,6 +1558,28 @@ function LoadTokensAPI
 				public IntPtr hThread;
 				public int dwProcessId;
 				public int dwThreadId;
+			}
+			
+			[StructLayout(LayoutKind.Sequential)]
+			public struct LUID
+			{
+				public Int32 LowPart;
+				public Int32 HighPart;
+			}
+			
+			[StructLayout(LayoutKind.Sequential)]
+			public struct TOKEN_STATISTICS
+			{
+				public LUID TokenId;
+				public LUID AuthenticationId;
+				public UInt64 ExpirationTime;
+				public TOKEN_TYPE TokenType;
+				public SECURITY_IMPERSONATION_LEVEL ImpersonationLevel;
+				public UInt32 DynamicCharged;
+				public UInt32 DynamicAvailable;
+				public UInt32 GroupCount;
+				public UInt32 PrivilegeCount;
+				public LUID ModifiedId;
 			}
 
 			public const UInt32 ERROR_INSUFFICIENT_BUFFER = 122;
@@ -5324,6 +5346,7 @@ function ListSessionTokens
 	If (-not (EnableSeDebug)) { return }
 	
 	Write-Host ("`n[===] Listing Session Tokens [===]")
+	Write-Host ("[+] Format = AuthenticationID:ProcessID:Domain:UserName:SID:TokenType")
 	
 	# Enumerate all processes
 	$ArraySize = 120
@@ -5355,10 +5378,10 @@ function ListSessionTokens
 			$Succeeded = [TokensAPI]::OpenProcessToken($ProcHandle, [TokensAPI]::TOKEN_MANIP_ACCESS, [ref]$TokenHandle)
 			If ($Succeeded)
 			{
-				# Get token information
-				$TokenInfoLength = 0
+				# Get token information (TokenUser and TokenStatistics)
 				
-				# Call one time to get token info struct length
+				# Call one time to get token info struct length (TokenUser)
+				$TokenInfoLength = 0
 				$Succeeded = [TokensAPI]::GetTokenInformation($TokenHandle, [TokensAPI+TOKEN_INFORMATION_CLASS]::TokenUser, 0, $TokenInfoLength, [ref]$TokenInfoLength)
 				If (-not $Succeeded)
 				{
@@ -5380,12 +5403,40 @@ function ListSessionTokens
 					Continue
 				}
 				
-				$Succeeded = [TokensAPI]::CloseHandle($TokenHandle)
-				
 				$TokenInfo = New-Object TokensAPI+TOKEN_USER
 				$Cast = [System.Runtime.InteropServices.Marshal]::PtrToStructure($TokenInfoPtr, [Type]$TokenInfo.GetType())
-				
 				$SIDPtr = $Cast.User.Sid
+				
+				# Call one time to get token info struct length (TokenStatistics)
+				$TokenInfoLength = 0
+				$Succeeded = [TokensAPI]::GetTokenInformation($TokenHandle, [TokensAPI+TOKEN_INFORMATION_CLASS]::TokenStatistics, 0, $TokenInfoLength, [ref]$TokenInfoLength)
+				If (-not $Succeeded)
+				{
+					If ([TokensAPI]::GetLastError() -ne [TokensAPI]::ERROR_INSUFFICIENT_BUFFER)
+					{
+						$Discard = [TokensAPI]::CloseHandle($ProcHandle)
+						$Discard = [TokensAPI]::CloseHandle($TokenHandle)
+						Continue
+					}
+				}
+				
+				[IntPtr]$TokenInfoPtr = [System.Runtime.InteropServices.Marshal]::AllocHGlobal($TokenInfoLength)				
+				$Succeeded = [TokensAPI]::GetTokenInformation($TokenHandle, [TokensAPI+TOKEN_INFORMATION_CLASS]::TokenStatistics, $TokenInfoPtr, $TokenInfoLength, [ref]$TokenInfoLength)
+				If (-not $Succeeded)
+				{
+					$Discard = [TokensAPI]::CloseHandle($ProcHandle)
+					$Discard = [TokensAPI]::CloseHandle($TokenHandle)
+					[System.Runtime.InteropServices.Marshal]::FreeHGlobal($TokenInfoPtr)
+					Continue
+				}
+				
+				$TokenInfo = New-Object TokensAPI+TOKEN_STATISTICS
+				$Cast = [System.Runtime.InteropServices.Marshal]::PtrToStructure($TokenInfoPtr, [Type]$TokenInfo.GetType())
+				$LogonID = $Cast.AuthenticationId.LowPart
+				$TokenType = $Cast.TokenType
+				
+				$Succeeded = [TokensAPI]::CloseHandle($TokenHandle)
+				
 				$SIDPtrString = 0
 				$Succeeded = [TokensAPI]::ConvertSidToStringSid($SIDPtr, [ref]$SIDPtrString)
 				If (-not $Succeeded)
@@ -5425,7 +5476,7 @@ function ListSessionTokens
 					Continue
 				}
 				
-				Write-Host ("[+] {0}:{1}:{2}:{3}:{4}" -f ($ProcessIds[$i], $Domain, $UserName, $SID, $peUse))
+				Write-Host ("[+] {0}:{1}:{2}:{3}:{4}:{5}" -f ($LogonID, $ProcessIds[$i], $Domain, $UserName, $SID, $TokenType))
 				$Discard = [TokensAPI]::CloseHandle($ProcHandle)
 				$Discard = [TokensAPI]::CloseHandle($TokenHandle)
 				[System.Runtime.InteropServices.Marshal]::FreeHGlobal($TokenInfoPtr)
