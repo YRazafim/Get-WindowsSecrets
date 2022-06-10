@@ -6,8 +6,9 @@ The script work on a local Windows machine:
   * Powershell v2 to latest
   * Windows NT 6.0 to latest
 
-It is not intended to bypass AVs and you have to be administrator on the computer.<br/>
-It is commented to understand each process. Currently It can:<br/>
+It is not intended to bypass AVs and you have to be administrator on the computer. The code is commented to understand each process.
+
+Currently It can:<br/>
    * Dump BootKey
    * Compute Hashed BootKey
    * Dump SAM
