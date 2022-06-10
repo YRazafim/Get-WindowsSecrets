@@ -10099,7 +10099,7 @@ function Get-LSASS($Method)
 function Get-WindowsSecrets()
 {
 	<#
-		Get-WindowsSecrets: Call to functions to get Windows Secrets (BootKey, SAM, LSA Secrets, Cached Domain Creds, DPAPI Secrets, VNC pwds, NTDS.dit)
+		Get-WindowsSecrets: Call to functions to get Windows Secrets (BootKey, SAM, LSA Secrets, Cached Domain Creds, DPAPI Secrets, VNC pwds, NTDS.dit, LSASS, Session Tokens)
 			- For DPAPI Secrets, It is very slow for MasterKeys decryption, you can skip with -SkipDPAPI parameter
 	#>
 	Param(
