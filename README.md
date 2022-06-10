@@ -1,8 +1,8 @@
 # Why
 
 To understand how can we dump Windows Secrets internally.<br/>
-Powershell implementation of Secretsdump (<https://github.com/SecureAuthCorp/impacket/blob/master/examples/secretsdump.py>) and Pypykatz (<https://github.com/skelsec/pypykatz>).<br/>
-The script work on a local Windows machine (Powershell v2 to latest).<br/>
+Powershell implementation of [Secretsdump](<https://github.com/SecureAuthCorp/impacket/blob/master/examples/secretsdump.py>) and [Pypykatz](<https://github.com/skelsec/pypykatz>).<br/>
+The script work on a local Windows machine: Powershell v2 to latest / Windows NT 6.0 to latest.<br/>
 It is not intended to bypass AVs and you have to be administrator on the computer.<br/>
 It is commented to understand each process. Currently It can:<br/>
    * Dump BootKey
@@ -20,7 +20,7 @@ It is commented to understand each process. Currently It can:<br/>
    * Dump DPAPI Secrets<br/>
       * Wi-Fi passwords<br/>
       * <del>Chrome cookies/passwords</del> (Removed because It required loading ChilkatDotNet2 and System.Data.SQLite DLLs)<br/>
-   * Dump Vault Credential Manager passwords (VPOL and VCRD files)
+      * Vault Credential Manager passwords (VPOL and VCRD files)
    * Dump VNC passwords (RealVNC, TightVNC, TigerVNC, UltraVNC)
    * Dump NTDS.dit (Shadow Copy and parsing as ESE format)
    * Dump LSASS (ProcOpen and DupHandle methods)
