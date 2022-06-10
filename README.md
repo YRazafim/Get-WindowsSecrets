@@ -1,10 +1,11 @@
 # Why
 
-To understand how can we dump Windows Secrets internally.<br/>
+To understand how to dump Windows Secrets internally.<br/>
 Powershell implementation of [Secretsdump](<https://github.com/SecureAuthCorp/impacket/blob/master/examples/secretsdump.py>) and [Pypykatz](<https://github.com/skelsec/pypykatz>).<br/>
 The script work on a local Windows machine:
   * Powershell v2 to latest
   * Windows NT 6.0 to latest
+
 It is not intended to bypass AVs and you have to be administrator on the computer.<br/>
 It is commented to understand each process. Currently It can:<br/>
    * Dump BootKey
