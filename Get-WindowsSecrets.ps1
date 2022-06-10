@@ -2654,7 +2654,7 @@ function Get-CachedDomainCreds($NLKM)
 			- Wi-Fi passwords have known locations
 		4- Decrypt the DPAPI Secret (or DPAPI Blob) with the corresponding MasterKey (MKGUID) decrypted (If we have It)
 
-	NOTE: MasterKeys can be stored and retrieved from LSASS (not implemented)
+	NOTE: MasterKeys can be stored and retrieved from LSASS (implemented)
 #>
 
 <### Get MasterKeys decrypted ###>
