@@ -1,8 +1,12 @@
+# MindMap
+
+MindMap with pseudo-code for a high-level overview available here <https://github.com/YRazafim/Get-WindowsSecrets/blob/main/WindowsSecretsMindMap.pdf>
+
 # Why
 
 To understand how to dump Windows Secrets internally.<br/>
 Powershell implementation of [Secretsdump](<https://github.com/SecureAuthCorp/impacket/blob/master/examples/secretsdump.py>) and [Pypykatz](<https://github.com/skelsec/pypykatz>).<br/>
-The script work on a local Windows machine:
+The script work (or should work!) on a local Windows machine:
   * Powershell v2 to latest
   * Windows NT 6.0 to latest
 
