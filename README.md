@@ -29,7 +29,7 @@ Currently It can:<br/>
    * Dump Cached Domain Credentials
    * Dump DPAPI Secrets<br/>
       * Wi-Fi passwords<br/>
-      * <del>Chrome cookies/passwords</del> (Removed because It required loading ChilkatDotNet2 and System.Data.SQLite DLLs)<br/>
+      * <del>Chrome cookies/passwords</del> (Removed because It required loading ChilkatDotNet2 and System.Data.SQLite DLLs). Writed into [Get-ChromeSecrets](<https://github.com/YRazafim/Get-WindowsSecrets/blob/main/Get-ChromeSecrets.ps1>). Dlls are hardcoded into the file<br/>
       * Vault Credential Manager passwords (VPOL and VCRD files)
    * Dump VNC passwords (RealVNC, TightVNC, TigerVNC, UltraVNC)
    * Dump NTDS.dit (Shadow Copy and parsing as ESE format)
