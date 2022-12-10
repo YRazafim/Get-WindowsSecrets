@@ -33,7 +33,7 @@ Currently It can:<br/>
    * Dump VNC passwords (RealVNC, TightVNC, TigerVNC, UltraVNC)
    * Dump NTDS.dit (Shadow Copy and parsing as ESE format)
    * Dump LSASS (ProcOpen and DupHandle methods)
-   * List Session Tokens and Impersonate
+   * List Session Tokens and Impersonate (ImpersonateLoggedOnUser()/CreateProcessWithToken()/CreateProcessAsUser())
 
 # How it works
 
