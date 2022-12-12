@@ -5585,7 +5585,7 @@ function ListSessionTokens
 	# Enable require privilege: SeDebugPrivilege
 	If (-not (EnablePrivilege "SeDebugPrivilege"))
 	{
-		Write-Host ("[-] Failed to enable SeDebugPrivilege")
+		Write-Host ("[-] Failed to enable SeDebugPrivilege`n")
 		return
 	}
 
@@ -5732,7 +5732,6 @@ function ListSessionTokens
 				$ReturnVal = [TokensAPI]::LsaGetLogonSessionData($LuidPtr, [Ref]$LogonSessionDataPtr)
 				If ($ReturnVal -ne 0 -and $LogonSessionDataPtr -eq [IntPtr]::Zero)
 				{
-					Write-Host ("LsaGetLogonSessionData() failed with error {0}" -f ([TokensAPI]::GetLastError()))
 					$Discard = [TokensAPI]::CloseHandle($ProcHandle)
 					$Discard = [TokensAPI]::CloseHandle($TokenHandle)
 					$Discard = [TokensAPI]::CloseHandle($LuidPtr)
@@ -5767,7 +5766,7 @@ function ImpersonateToken($ProcID, $Method)
 		return
 	}
 
-	Write-Host ("`n[+] Try to impersonate Session Token of process ID = {0}`n" -f ($ProcID))
+	Write-Host ("`n[+] Try to impersonate Session Token of process ID = {0}" -f ($ProcID))
 	$ProcFound = $False
 
 	# Load Tokens functions
