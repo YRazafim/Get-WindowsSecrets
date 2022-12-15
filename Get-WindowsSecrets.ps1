@@ -6076,7 +6076,7 @@ function ImpersonateToken($ProcID, $Method, $IsSystem, $ConnectTokenPipe, $Imper
 								$tokenPipeIn.Close()
 								$tokenPipeOut.Close()
 							}
-							ElseIf ($ImpersonateCommand -neq 'Null')
+							ElseIf ($ImpersonateCommand -ne 'Null')
 							{
 								$tokenPipeIn = new-object System.IO.Pipes.NamedPipeClientStream '.','tokenPipeIn','Out'
 								$tokenPipeOut = new-object System.IO.Pipes.NamedPipeClientStream '.','tokenPipeOut','In'
