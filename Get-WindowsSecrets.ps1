@@ -6036,7 +6036,7 @@ function ImpersonateToken($ProcID, $Method, $IsSystem, $ConnectTokenPipe, $Imper
 						}
 						Else
 						{
-							Write-Host ("[+] Successfully impersonated token of requested process ID with CreateProcessAsUserW()`n")
+							Write-Host ("[+] Successfully impersonated token of requested process ID with CreateProcessAsUserW()")
 
 							<# Allow to directly interact with newly created process and wait It
 							$SpawnProc = Get-CIMInstance -ClassName win32_process -filter "parentprocessid = '$($([System.Diagnostics.Process]::GetCurrentProcess().Id))'" | Select ProcessId
