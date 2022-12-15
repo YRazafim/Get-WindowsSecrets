@@ -48,7 +48,7 @@ Get-WindowsSecrets -SkipDPAPI $True
 Get-WindowsSecrets
 Get-WindowsSecrets -ImpersonateTokenProcID <ProcID> -ImpersonateMethod ImpersonateLoggedOnUser
 Get-WindowsSecrets -ImpersonateTokenProcID <ProcID> -ImpersonateMethod CreateProcessWithToken
-Get-WindowsSecrets -ImpersonateTokenProcID <ProcID> -ImpersonateMethod CreateProcessAsUser
+Get-WindowsSecrets -ImpersonateTokenProcID <ProcID> -ImpersonateMethod CreateProcessAsUser -ImpersonateIsSystem "True"/"False" -ImpersonateConnectTokenPipe "True"/"False"
 ```
 
 Creds and NTHashes parameters helped for DPAPI only (If you compromised these secrets for a user).
