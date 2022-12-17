@@ -5967,6 +5967,9 @@ function ImpersonateToken($ProcID, $Method, $IsSystem, $ConnectTokenPipe, $Imper
 								$out = $res.Replace("||||||", "`n")
 								Write-Host ($out)
 							}
+							
+							$tokenWriter.WriteLine("exit")
+							$tokenWriter.Flush()
 						}
 
 						$tokenReader.Close()
@@ -6093,6 +6096,9 @@ function ImpersonateToken($ProcID, $Method, $IsSystem, $ConnectTokenPipe, $Imper
 									$out = $res.Replace("||||||", "`n")
 									Write-Host ($out)
 								}
+								
+								$tokenWriter.WriteLine("exit")
+								$tokenWriter.Flush()
 
 								$tokenReader.Close()
 								$tokenWriter.Close()
