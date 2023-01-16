@@ -46,6 +46,7 @@ Get-WindowsSecrets -NTHashes <User>:<NTHash>
 Get-WindowsSecrets -Creds <User>:<Pwd> -NTHashes <User1>:<NTHash1>/<User2>:<NTHash2>
 Get-WindowsSecrets -SkipDPAPI $True
 Get-WindowsSecrets
+List-SessionTokens
 Get-WindowsSecrets -ImpersonateTokenProcID <ProcID> -ImpersonateMethod ImpersonateLoggedOnUser
 Get-WindowsSecrets -ImpersonateTokenProcID <ProcID> -ImpersonateMethod CreateProcessWithToken
 Get-WindowsSecrets -ImpersonateTokenProcID <ProcID> -ImpersonateMethod CreateProcessAsUser -ImpersonateIsSystem "True"/"False" -ImpersonateConnectTokenPipe "True"/"False" -ImpersonateCommand "Null"/"<CmdToExecute>"
