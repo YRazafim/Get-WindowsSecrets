@@ -1,6 +1,6 @@
 # MindMap
 
-[MindMap](<https://github.com/YRazafim/Get-WindowsSecrets/blob/main/WindowsSecretsMindMap.pdf>) with pseudo-code for a high-level overview.
+[MindMap](<https://github.com/YRazafim/Get-WindowsSecrets/blob/main/Windows Secrets.pdf>) with pseudo-code for a high-level overview.
 
 # Why
 
