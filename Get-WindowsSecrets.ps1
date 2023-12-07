@@ -11339,15 +11339,15 @@ function Get-LSASS($Method)
 
 <#
 .SYNOPSIS
-    Recover Windows Secrets
+	Recover Windows Secrets
 
 .DESCRIPTION
-    SAM, LSA Secrets, Cached Domain Creds, DPAPI Secrets, VNC pwds, NTDS.dit, LSASS, Session Tokens
+	SAM, LSA Secrets, Cached Domain Creds, DPAPI Secrets, VNC pwds, NTDS.dit, LSASS, Session Tokens
 
 .PARAMETER SAM
-    Dump SAM (LM/NT Hashes)
+	Dump SAM (LM/NT Hashes)
 .PARAMETER LSA
-    Dump LSA Secrets ($MACHINE.ACC, DefaultPassword, NL$KM, DPAPI_SYSTEM, _SC_<ServiceName>, ASPNET_WP_PASSWORD, L$_SQSAA_S-<SID>, etc.)
+	Dump LSA Secrets ($MACHINE.ACC, DefaultPassword, NL$KM, DPAPI_SYSTEM, _SC_<ServiceName>, ASPNET_WP_PASSWORD, L$_SQSAA_S-<SID>, etc.)
 .PARAMETER CachedDomainCreds
 	Dump Cached Domain Credentials (MsCash hashes)
 .PARAMETER DPAPI
@@ -11378,7 +11378,7 @@ function Get-LSASS($Method)
 	For CreateProcessAsUser: Run a command to the token pipe rather than using a pseudo-interactive shell
 
 .EXAMPLE
-    Get-WindowsSecrets -SAM
+	Get-WindowsSecrets -SAM
 .EXAMPLE
 	Get-WindowsSecrets -LSA
 .EXAMPLE
