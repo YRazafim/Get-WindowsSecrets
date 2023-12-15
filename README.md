@@ -32,6 +32,8 @@ Currently It can:<br/>
       * Vault Credential Manager passwords (VPOL and VCRD files)
    * Dump VNC passwords (RealVNC, TightVNC, TigerVNC, UltraVNC)
    * Dump NTDS.dit (Shadow Copy and parsing as ESE format)
+      * LM and NT Hashes
+      * Domain Backup Keys
    * Dump LSASS (ProcOpen and DupHandle methods)
    * List Session Tokens and Impersonate (ImpersonateLoggedOnUser()/CreateProcessWithToken()/CreateProcessAsUser())
 
@@ -46,6 +48,7 @@ Get-WindowsSecrets -LSA
 Get-WindowsSecrets -CachedDomainCreds
 Get-WindowsSecrets -VNC
 Get-WindowsSecrets -NTDS
+Get-WindowsSecrets -NTDS -ExportDomainBackupKey
 Get-WindowsSecrets -SessionTokens
 Get-WindowsSecrets -ActivatePrivilege "SeShutdownPrivilege"
 Get-WindowsSecrets -Impersonate -TokenProcID 1528 -ImpersonateMethod "ImpersonateLoggedOnUser"
@@ -54,8 +57,11 @@ Get-WindowsSecrets -Impersonate -TokenProcID 1528 -ImpersonateMethod "CreateProc
 Get-WindowsSecrets -Impersonate -TokenProcID 1528 -ImpersonateMethod "CreateProcessAsUser" -Command "whoami"
 Get-WindowsSecrets -LSASS
 Get-WindowsSecrets -DPAPI
+Get-WindowsSecrets -DPAPI -InUserContext
+Get-WindowsSecrets -DPAPI -InUserContext -NoMasterKeysDecryption
 Get-WindowsSecrets -DPAPI -Creds 'User1:Pwd1/User2@Domain:Pwd2' -NTHashes 'User1:HexNTHash1/User2@Domain:HexNTHash2'
 Get-WindowsSecrets -DPAPI -Creds 'User1:Pwd1/User2@Domain:Pwd2' -NTHashes 'User1:HexNTHash1/User2@Domain:HexNTHash2' -SkipLSASS
+Get-WindowsSecrets -DPAPI -Creds 'User1:Pwd1/User2@Domain:Pwd2' -NTHashes 'User1:HexNTHash1/User2@Domain:HexNTHash2' -SkipLSASS -SkipNTDS
 ```
 
 Creds and NTHashes parameters helped for DPAPI only (If you compromised these secrets for a user).

