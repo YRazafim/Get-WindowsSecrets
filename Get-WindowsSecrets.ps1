@@ -590,7 +590,6 @@ function Decompress($Chunk)
     }
     ElseIf ($identifier -eq $COMPRESSION_SCHEME['COMPRESS_XPRESS'])
 	{
-        # Assuming `lzxpress.decompress` is a custom function
         return (Decompress-Lzxpress $Chunk[3..($Chunk.Length - 1)])
     }
     ElseIf ($identifier -eq $COMPRESSION_SCHEME['COMPRESS_XPRESS9'])
@@ -1421,7 +1420,7 @@ function EnablePrivilege($Privilege)
 }
 
 <#
-	Verify that process architecture matching this process architecture
+	Verify that LSASS process architecture matching this process architecture
 	And SeDebugPrivilege enabled
 #>
 function SetupBeforeDumping()
@@ -1630,12 +1629,12 @@ function LoadWinProcAPI
 }
 
 <#
-	Find indexes of search into bytes
+	Find (all) indexes of $Search into bytes
 #>
 function Find-Bytes($Bytes, $Search, $Start, $All)
 {
 	$Res = @()
-    For ($Index = $Start; $Index -le $Bytes.Length - $Search.Length ; $Index++)
+    For ($Index = $Start; $Index -le ($Bytes.Length - $Search.Length); $Index++)
 	{
         For ($i = 0; $i -lt $Search.Length -and $Bytes[$Index + $i] -eq $Search[$i]; $i++) {}
         If ($i -ge $Search.Length)
@@ -1649,8 +1648,8 @@ function Find-Bytes($Bytes, $Search, $Start, $All)
 }
 
 <#
-	Iterate over process pages to find offset address
-	Return all bytes in page and offset in page to address
+	Iterate over process pages to find offset of $Addr
+	Return all bytes in page and offset in page to $Addr
 #>
 $Global:CachedMemory = @{}
 $Global:CachedMemory["Buff"] = @()
@@ -1660,7 +1659,7 @@ function ReadMemory($Handle, $Pages, $Addr)
 {
 	If (($Addr -ge $Global:CachedMemory["BaseAddr"]) -and ($Addr -lt $Global:CachedMemory["EndAddr"]))
 	{
-		# Address is inside already cached memory page range -> Return cached buffer
+		# Address is already inside cached memory page range -> Return cached buffer
 
 		return ($Global:CachedMemory["Buff"], ($Addr - $Global:CachedMemory["BaseAddr"]), $Global:CachedMemory["BaseAddr"])
 	}
@@ -1709,7 +1708,7 @@ function ReadMemory($Handle, $Pages, $Addr)
 }
 
 <#
-	Recover indexes into buff where signature found at address
+	Recover indexes into buff where $Signature found at $Address
 	Return the buffer and indexes
 #>
 function SearchMemory($Handle, $Pages, $Address, $Signature)
@@ -1862,7 +1861,7 @@ function GetType($Buff, $BaseAddr, [ref]$Offset, $Type, $Struct)
 }
 
 <#
-	Get absolute pointer value = relative pointer into buff + addr (+ 4 if 64 bit)
+	Get absolute pointer value = relative pointer into buff + $Addr (+ 4 if 64 bit)
 #>
 function GetPtr-WithOffset($Handle, $Pages, $Addr, $ProcArch)
 {
@@ -1910,7 +1909,7 @@ function GetPtr($Handle, $Pages, $Addr, $ProcArch)
 }
 
 <#
-	Read nbbytes into buff at offset and update offset passed as reference
+	Read $NbBytes into buff at offset and update offset passed as reference
 #>
 function ReadBuff($Buff, $NbBytes, [ref]$Offset)
 {
@@ -2420,7 +2419,7 @@ function LoadTokensAPI
 	Get-SAM:
 		1- Get-BootKey
 		2- Get-HBootKey with BootKey
-		3- Parse SAM registry and decrypt/deobfuscate LM/NT hashes with BootKey and HashedBootKey
+		3- Parse SAM registry and decrypt/deobfuscate LM/NT hashes with HashedBootKey
 #>
 
 function Get-BootKey
@@ -2858,7 +2857,7 @@ function Get-SAM($BootKey)
 		- DefaultPassword = Clear text password when autologon is configured for an account
 		- NL$KM = Secret key in clear text for decrypting Cached Domain Credentials
 		- DPAPI_SYSTEM = System User PreKey and System Machine PreKey in clear text for decrypting System User MasterKey files and System Machine MasterKey files (DPAPI)
-		- _SC_<ServiceName> = Service account password in clear text
+		- _SC_<ServiceName> = Account password for Windows Services (not Scheduled Tasks) in clear text
 		- ASPNET_WP_PASSWORD = Password for .NET services in clear text
 		- L$_SQSA_S-<SID> = Clear text answers for Windows Security Questions
 		- Others
@@ -3408,7 +3407,7 @@ function Get-CachedDomainCreds($NLKM)
 
 <#
 	- DPAPI Secrets (or DPAPI Blob) are encrypted/decrypted with MasterKeys and CryptProtectData()/CryptUnprotectData() from Windows API
-	- MasterKeys are encrypted with PreKeys
+	- MasterKeys are encrypted with PreKeys or Domain Backup Key
 	- MasterKeys are stored encrypted into MasterKey Files
 		- Users MasterKey' Files
 			- C:\Users\<USER>\AppData\Roaming\Microsoft\Protect\<UserSID>\<MKGUID>
@@ -3426,12 +3425,12 @@ function Get-CachedDomainCreds($NLKM)
 	- Each MasterKey File contain 5 entries
 		- Headers and system information
 		- MasterKey encrypted with Users' PreKeys or System PreKeys (depending on DPAPI encryption/decryption context)
-		- DomainBackupMasterKey encrypted with RSA public key of DC (RSA keys pair generated and send to DC when generating Master Key)
+		- DomainBackupMasterKey encrypted with RSA public key of DC (RSA keys pair randomly generated only once, during the initial creation of the domain, stored into NTDS.dit)
 		- LocalBackupEncryptionKey encrypted with System Machine PreKey from DPAPI_SYSTEM of LSA Storage
 		- CREDHIST GUID
-			- In Windows 2000, It stored the LocalBackupMasterKey encrypted, which could be decrypted by any administrator with the LocalBackupEncryptionKey and allowed to Recover every Users' MasterKeys
+			- In Windows 2000, It stored the LocalBackupMasterKey encrypted, which could be decrypted by any administrator with the LocalBackupEncryptionKey and allowed to recover every Users' MasterKeys
 			- After Windows 2000, It point to a CREDHIST File which contain Old User's PreKeys chain encrypted with user current's password
-	- For each MasterKey File : Master Key/Domain Backup Master Key/Local Backup Master Key (Windows 2000) point to the same Master Key value once decrypted
+	- For each MasterKey File : Master Key/Domain Backup Master Key/Local Backup Master Key (Windows 2000) point to the same MasterKey value once decrypted
 	- DPAPI encryption/decryption context
 		- "CRYPTPROTECT_UI_FORBIDDEN" = 0x1 = Used when user interface is not available. For example, when using remote access.
 		- "CRYPTPROTECT_LOCAL_MACHINE" = 0x4 = Data is protected using local computer account. Any administrator user of the system may be able to decrypt it.
@@ -3440,6 +3439,10 @@ function Get-CachedDomainCreds($NLKM)
 		- "CRYPTPROTECT_VERIFY_PROTECTION" = 0x40 = The flag checks security level of DPAPI blob. If the default security level is higher than current security level of the blob, the function returns error CRYPT_I_NEW_PROTECTION_REQUIRED as advice to reset securiry for the source data.
 		- "CRYPTPROTECT_CRED_REGENERATE" = 0x80 = Regenerate local computer passwords.
 		- "CRYPTPROTECT_SYSTEM" = 0x20000000 = Indicates that only system processes can encrypt/decrypt data.
+	- Two cases when trying to decrypt DPAPI Blob
+		- In the context of the user that own the DPAPI Secrets -> Simply call CryptUnprotectData() -> No need to any MasterKeys
+			- Calling this function in the context of the owner will blindly decrypt the DPAPI Blob without asking any pwds
+		- The DPAPI Secret is not owned by our current user -> We need Masterkeys and implement the cryptographic decryption process of CryptUnprotectData() from Windows API to provide gathered MasterKeys
 
 	- DPAPI Secrets can be:
 		- Cookies/Pwds from IE, Chrome (Encrypted with User MasterKeys)
@@ -3460,10 +3463,12 @@ function Get-CachedDomainCreds($NLKM)
 			- Wi-Fi passwords have known locations
 		4- Decrypt the DPAPI Secret (or DPAPI Blob) with the corresponding MasterKey (MKGUID) decrypted (If we have It)
 
-	NOTE: MasterKeys can be stored and Recoverd from LSASS (implemented)
+	NOTE: MasterKeys can be stored and recoverd unencrypted from LSASS
 #>
 
-<### Get MasterKeys decrypted ###>
+<###
+	Get MasterKeys decrypted
+###>
 
 function Get-PreKeys($LSA_DPAPI_SYSTEM, $SAM, $Pwds, $NTHashes)
 {
@@ -3981,7 +3986,9 @@ function Get-MasterKeysFromFiles($LSA_DPAPI_SYSTEM, $SAM, $Pwds, $NTHashes, $LSA
 	return $MasterKeys
 }
 
-<### Decrypt a DPAPI Blob with MasterKeys ###>
+<###
+	Decrypt a DPAPI Blob with MasterKeys
+###>
 
 function MKGUID($Data)
 {
@@ -4007,14 +4014,14 @@ function MKGUID($Data)
 	return "$Data1-$Data2-$Data3-$Data4-$Data5"
 }
 
-# Two cases when trying to decrypt DPAPI Blob
-#	- In the context of the user that own the DPAPI Secrets -> Simply call CryptUnprotectData() -> No need to any MasterKeys
-#		- Calling this function in the context of the owner will blindly decrypt the DPAPI Blob without asking any pwds
-#	- The DPAPI Secret is not owned by our current user -> We need Masterkeys and implement the cryptographic decryption process of CryptUnprotectData() from Windows API to provide gathered MasterKeys
 function Decrypt-DPAPIBlob($Blob, $MasterKeys, $Entropy, $InUserContext, $NoMasterKeysDecryption)
 {
 	<#
 		Decrypt-DPAPIBlob: Decrypt a DPAPI Blob with all gathered MasterKeys or in the context of the current user
+		Two cases when trying to decrypt DPAPI Blob
+			- In the context of the user that own the DPAPI Secrets -> Simply call CryptUnprotectData() -> No need to any MasterKeys
+				- Calling this function in the context of the owner will blindly decrypt the DPAPI Blob without asking any pwds
+			- The DPAPI Secret is not owned by our current user -> We need Masterkeys and implement the cryptographic decryption process of CryptUnprotectData() from Windows API to provide gathered MasterKeys
 	#>
 
 	If ($InUserContext)
@@ -4323,7 +4330,9 @@ function Decrypt-DPAPIBlob($Blob, $MasterKeys, $Entropy, $InUserContext, $NoMast
 	Else { return $ClearText }
 }
 
-<### Decrypt a credential file ###>
+<###
+	Decrypt a credential file
+###>
 
 function Decrypt-CredentialFile($FilePath, $MasterKeys, $InUserContext, $NoMasterKeysDecryption)
 {
@@ -4445,7 +4454,9 @@ function Decrypt-CredentialFile($FilePath, $MasterKeys, $InUserContext, $NoMaste
 	}
 }
 
-<### Find DPAPI Secrets and try to decrypt them ###>
+<###
+	Find DPAPI Secrets and try to decrypt them
+###>
 
 function Get-WiFiPwds($MasterKeys, $InUserContext, $NoMasterKeysDecryption)
 {
@@ -5051,7 +5062,7 @@ function Get-DPAPISecrets($MasterKeys, $InUserContext, $NoMasterKeysDecryption)
 	<#
 		Get-DPAPISecrets: Get DPAPI Secrets and try to decrypt them with MasterKeys or in the context of the user
 			- Decrypting Wi-Fi passwords required System Master Keys thus It always succeed (as long as MasterKeys was computed)
-			- Decrypting Chrome secrets (cookies/pwds) require User Master Keys thus It can fail (If user password/NT hash not provided or current user not own the DPAPI Secret)
+			- Decrypting Chrome secrets (cookies/pwds) requires User Master Keys thus It can fail (If user password/NT hash not provided, unencrypted MasterKey not dumped from LSASS or current user not own the DPAPI Secret)
 			- Decrypting VPOL Files with System and User MasterKeys or in the context of the user -> Two VPOL Keys for each VPOL File decrypted -> Decrypt VCRD Files with VPOL Keys
 	#>
 
@@ -5075,7 +5086,7 @@ function TagToRecord($Cursor, $Tag, $FilterTables, $Version, $Revision, $PageSiz
 {
 	<#
 		Try to translate a tag to a record
-		For Long Values tag, simply return the tag
+		For Long Values tag (no filters), simply return the tag
 	#>
 
 	If (-not $FilterTables)
@@ -5813,7 +5824,7 @@ function ParseCatalog($NTDSContent, $PageNum, $Version, $Revision, $PageSize)
 		A catalog have many pages
 			- A page is at $NTDSContent[(($PageNum + 1) * $PageSize)..((($PageNum + 1) * $PageSize) + $PageSize)]
 			- PageData = Raw page content
-			- PageRecord = The parsed page (headers)
+			- PageRecord = The parsed page (with headers)
 		A page is divided into tags (tag data and tag headers)
 			- A tag header is 4 bytes and contain pointers (size, offset) to the tag data into the page
 				- All tag headers are at the end of the page in reverse order
