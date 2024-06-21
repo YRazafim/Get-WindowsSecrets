@@ -59,7 +59,7 @@ Get-WindowsSecrets -Impersonate -TokenProcID 1528 -ImpersonateMethod "CreateProc
 Get-WindowsSecrets -LSASS
 Get-WindowsSecrets -DPAPI [-SkipLSASS] [-SkipNTDS]
 Get-WindowsSecrets -DPAPI -ImportDomainBackupKey <HexStringDomainBackupKeyPVKFormat> -SkipNTDS
-Get-WindowsSecrets -DPAPI -InUserContext [-NoMasterKeysDecryption]
+Get-WindowsSecrets -DPAPI -InUserContext -NoMasterKeysDecryption -SkipLSA -SkipLSASS -SkipNTDS
 Get-WindowsSecrets -DPAPI -Creds 'User1:Pwd1/User2@Domain:Pwd2' -NTHashes 'User1:HexNTHash1/User2@Domain:HexNTHash2'
 ```
 
