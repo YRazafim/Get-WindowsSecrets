@@ -29,6 +29,7 @@ Currently It can:<br/>
    * Dump DPAPI Secrets<br/>
       * Wi-Fi passwords<br/>
       * Chrome cookies/passwords<br/>
+      * Edge cookies/passwords<br/>
       * Vault Credential Manager passwords (VPOL and VCRD files)
    * Dump VNC passwords (RealVNC, TightVNC, TigerVNC, UltraVNC)
    * Dump NTDS.dit (Shadow Copy and parsing as ESE format)
